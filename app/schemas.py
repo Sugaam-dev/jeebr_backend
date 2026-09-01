@@ -18,6 +18,12 @@ class LoginRequest(BaseModel):
     email: str
     password: str
 
+class SignupRequest(BaseModel):
+    email: EmailStr
+    password: str
+    full_name: str
+    role: Optional[str] = "Viewer"
+
 class UserResponse(BaseModel):
     id: int
     email: str

@@ -8,7 +8,7 @@ class Settings(BaseSettings):
     # PostgreSQL Configuration
     DATABASE_URL: str = os.getenv(
         'DATABASE_URL', 
-        'postgresql://postgres:root@localhost:5432/jeebr_db'
+        'postgresql://postgres:Root123@localhost:5432/jeebr_db'
     )
     
     # JWT Auth Configuration
@@ -27,5 +27,6 @@ class Settings(BaseSettings):
 
     class Config:
         case_sensitive = True
+        env_file = ".env"
 
 settings = Settings()

@@ -48,7 +48,7 @@ def propose_retention_action(
             "plan_name": customer.plan_name,
             "arpu": customer.arpu,
             "churn_score": score,
-            "signals": factors
+            "signals": [s.model_dump() if hasattr(s, 'model_dump') else s.dict() if hasattr(s, 'dict') else s for s in factors]
         }
     )
     return rec

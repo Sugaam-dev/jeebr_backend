@@ -50,7 +50,7 @@ def propose_assurance_dispatch(
             "optical_power": node.optical_power_dbm,
             "utilization": node.utilization_pct,
             "impacted_customers": node_pred.impacted_customers_count if node_pred else 0,
-            "signals": node_pred.contributing_signals if node_pred else []
+            "signals": [s.model_dump() if hasattr(s, 'model_dump') else s.dict() if hasattr(s, 'dict') else s for s in (node_pred.contributing_signals if node_pred else [])]
         }
     )
     return rec

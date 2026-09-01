@@ -8,6 +8,70 @@ def test_health():
     assert response.status_code == 200
     assert response.json()["status"] == "healthy"
 
+def test_signup_and_auth_flow():
+    import uuid
+    unique_email = f"test_{uuid.uuid4().hex[:8]}@sentinelos.ai"
+    
+    # 1. Valid Signup
+    signup_payload = {
+        "email": unique_email,
+        "password": "SecurePassword123!",
+        "full_name": "Test Engineer",
+        "role": "Viewer"
+    }
+    res = client.post("/api/auth/signup", json=signup_payload)
+    assert res.status_code == 201, f"Signup failed: {res.text}"
+    data = res.json()
+    assert "access_token" in data
+    assert data["role"] == "Viewer"
+    assert data["email"] == unique_email
+
+    # 2. Duplicate Signup rejection
+    dup_res = client.post("/api/auth/signup", json=signup_payload)
+    assert dup_res.status_code == 400
+    assert "already exists" in dup_res.json()["detail"]
+
+    # 3. Weak password rejection
+    weak_res = client.post("/api/auth/signup", json={
+        "email": f"weak_{uuid.uuid4().hex[:8]}@sentinelos.ai",
+        "password": "123",
+        "full_name": "Weak User",
+        "role": "Viewer"
+    })
+    assert weak_res.status_code == 400
+    assert "at least 6 characters" in weak_res.json()["detail"]
+
+    # 4. Standard Login with new user
+    login_res = client.post("/api/auth/login", json={
+        "email": unique_email,
+        "password": "SecurePassword123!"
+    })
+    assert login_res.status_code == 200
+    login_data = login_res.json()
+    assert "access_token" in login_data
+
+    # 5. Invalid credentials rejection
+    bad_login = client.post("/api/auth/login", json={
+        "email": unique_email,
+        "password": "WrongPassword!"
+    })
+    assert bad_login.status_code == 401
+
+    # 6. Unauthenticated protected endpoint rejection
+    unauth_res = client.get("/api/cockpit/summary")
+    assert unauth_res.status_code == 401
+
+    # 7. Admin user listing
+    admin_token = client.post("/api/auth/demo-login/Admin").json()["access_token"]
+    users_res = client.get("/api/auth/users", headers={"Authorization": f"Bearer {admin_token}"})
+    assert users_res.status_code == 200
+    assert len(users_res.json()) >= 5
+
+    # 8. Non-admin forbidden from user listing
+    viewer_token = data["access_token"]
+    forbidden_users = client.get("/api/auth/users", headers={"Authorization": f"Bearer {viewer_token}"})
+    assert forbidden_users.status_code == 403
+
 def test_demo_logins():
     roles = ["Executive", "NOC", "Care", "Revenue", "Admin"]
     tokens = {}
