@@ -117,38 +117,68 @@ def reject_recommendation(
     return rec
 
 def simulate_execution(db: Session, rec: Recommendation) -> Dict[str, Any]:
-    # Simulate execution on underlying entities
-    if rec.target_entity_type == 'Node':
+    # Simulate execution on underlying entities based on source module and entity type
+    if rec.source_module == 'Predictive Service Assurance' or rec.target_entity_type == 'Node':
         node = db.query(Node).filter(Node.id == rec.target_entity_id).first()
         if node:
             # Calibrate / improve node
-            node.health_score = min(100.0, node.health_score + 15.0)
+            node.health_score = min(100.0, node.health_score + 25.0)
             if node.health_score > 70.0:
                 node.status = 'Healthy'
             db.commit()
-        return {"action": "Field Dispatch Order #FDO-2026-981 dispatched to Mumbai Area Team", "status": "Dispatched"}
+        return {
+            "action": f"Field Dispatch Order #FDO-2026-{100 + rec.id} dispatched to Mumbai Area Engineering Team",
+            "status": "Dispatched",
+            "telemetry_calibration": "OTDR line trace initiated; optical attenuation restored to -21.4 dBm"
+        }
 
-    elif rec.target_entity_type == 'Ticket':
+    elif rec.source_module == 'AI-driven OSS/BSS Orchestration' or rec.target_entity_type == 'Ticket':
         ticket = db.query(Ticket).filter(Ticket.id == rec.target_entity_id).first()
         if ticket:
             ticket.status = 'Resolved'
             ticket.resolved_at = datetime.utcnow()
             db.commit()
-        return {"action": "Automated workflow executed successfully via TR-069 / OSS orchestrator", "status": "Resolved"}
+        return {
+            "action": f"Automated workflow #{ticket.ticket_code if ticket else 'TCK-1'} executed via TR-069 / OSS orchestrator",
+            "status": "Resolved",
+            "orchestration_time": "3.8 seconds"
+        }
 
-    elif rec.target_entity_type == 'Invoice':
+    elif rec.source_module == 'Revenue Assurance & Leakage Analytics' or rec.target_entity_type == 'Invoice':
         invoice = db.query(Invoice).filter(Invoice.id == rec.target_entity_id).first()
         if invoice:
             invoice.anomaly_flag = False
             invoice.status = 'Paid'
             db.commit()
-        return {"action": "Billing adjustment posted to SAP BRIM ledger", "status": "Adjusted"}
+        return {
+            "action": f"Billing adjustment for Invoice #{invoice.invoice_code if invoice else 'INV'} posted to SAP BRIM ledger",
+            "status": "Adjusted",
+            "ledger_sync": "Catalog aligned; differential invoice generated"
+        }
 
-    elif rec.target_entity_type == 'Customer':
+    elif rec.source_module == 'Intelligent Customer Journeys':
         cust = db.query(Customer).filter(Customer.id == rec.target_entity_id).first()
         if cust:
             cust.nps_score = min(10, cust.nps_score + 2)
+            if cust.current_stage == 'Complaint':
+                cust.current_stage = 'Use'
             db.commit()
-        return {"action": "Retention offer communication triggered via WhatsApp API", "status": "Offer Sent"}
+        return {
+            "action": f"Omnichannel Next-Best-Action triggered via WhatsApp Business API & Jeebr Self-Care App for {cust.name if cust else 'subscriber'}",
+            "status": "Action Triggered",
+            "channel_delivery": "Instant WhatsApp notification delivered (Receipt ID #WA-9821)"
+        }
 
-    return {"action": "Simulated task completed", "status": "Success"}
+    elif rec.source_module == 'Churn Prediction & Retention AI' or rec.target_entity_type == 'Customer':
+        cust = db.query(Customer).filter(Customer.id == rec.target_entity_id).first()
+        if cust:
+            cust.nps_score = min(10, cust.nps_score + 2)
+            cust.status = 'Active'
+            db.commit()
+        return {
+            "action": f"Retention save package & 20% billing credit applied to {cust.name if cust else 'subscriber'} in SAP BRIM",
+            "status": "Retention Active",
+            "care_outreach": "Priority Relationship Manager satisfaction call scheduled"
+        }
+
+    return {"action": "Simulated task completed successfully", "status": "Success"}

@@ -1,11 +1,9 @@
-from typing import List, Tuple
+from typing import List, Tuple, Optional
 from sqlalchemy.orm import Session
 from app.models import Invoice, Customer, Recommendation
 from app.schemas import RevenueLeakageItem, ContributingSignal
 
-def evaluate_invoice_anomaly(inv: Invoice, db: Session) -> Tuple[float, str, float, List[ContributingSignal], str, str]:
-    cust = db.query(Customer).filter(Customer.id == inv.customer_id).first()
-    
+def evaluate_invoice_signals(inv: Invoice) -> Tuple[float, str, float, List[ContributingSignal], str, str]:
     score = 15.0
     factors: List[ContributingSignal] = []
     desc = ""
@@ -81,24 +79,34 @@ def evaluate_invoice_anomaly(inv: Invoice, db: Session) -> Tuple[float, str, flo
 
     return round(final_score, 1), risk_level, round(confidence, 2), factors, desc, action
 
+def evaluate_invoice_anomaly(inv: Invoice, db: Session) -> Tuple[float, str, float, List[ContributingSignal], str, str]:
+    return evaluate_invoice_signals(inv)
+
 def detect_revenue_leakages(db: Session) -> List[RevenueLeakageItem]:
     invoices = db.query(Invoice).filter(Invoice.anomaly_flag == True).all()
-    leakages = []
+    if not invoices:
+        return []
 
+    cust_ids = {inv.customer_id for inv in invoices if inv.customer_id}
+    customers = {c.id: c for c in db.query(Customer).filter(Customer.id.in_(cust_ids)).all()} if cust_ids else {}
+
+    pending_rec_inv_ids = {
+        r.target_entity_id for r in db.query(Recommendation.target_entity_id).filter(
+            Recommendation.source_module == 'Revenue Assurance & Leakage Analytics',
+            Recommendation.target_entity_type == 'Invoice',
+            Recommendation.status == 'PENDING'
+        ).all()
+    }
+
+    leakages = []
     for inv in invoices:
-        cust = db.query(Customer).filter(Customer.id == inv.customer_id).first()
+        cust = customers.get(inv.customer_id)
         cust_name = cust.name if cust else "Unknown Customer"
         locality = cust.locality if cust else "Mumbai"
         segment = cust.segment if cust else "Home Broadband"
 
-        score, risk_lvl, conf, factors, desc, action = evaluate_invoice_anomaly(inv, db)
-
-        has_pending = db.query(Recommendation).filter(
-            Recommendation.source_module == 'Revenue Assurance & Leakage Analytics',
-            Recommendation.target_entity_type == 'Invoice',
-            Recommendation.target_entity_id == inv.id,
-            Recommendation.status == 'PENDING'
-        ).first() is not None
+        score, risk_lvl, conf, factors, desc, action = evaluate_invoice_signals(inv)
+        has_pending = inv.id in pending_rec_inv_ids
 
         leakages.append(RevenueLeakageItem(
             invoice_id=inv.id,

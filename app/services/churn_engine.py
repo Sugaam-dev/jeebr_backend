@@ -1,14 +1,15 @@
-from typing import List, Tuple
+from typing import List, Tuple, Optional, Dict
 from sqlalchemy.orm import Session
 from app.models import Customer, UsageRecord, Ticket, Invoice, Node, Recommendation
 from app.schemas import ChurnCustomerPrediction, ContributingSignal
 
-def calculate_customer_churn_score(customer: Customer, db: Session) -> Tuple[float, str, float, List[ContributingSignal], str, float]:
-    usage = db.query(UsageRecord).filter(UsageRecord.customer_id == customer.id).first()
-    tickets = db.query(Ticket).filter(Ticket.customer_id == customer.id).all()
-    invoices = db.query(Invoice).filter(Invoice.customer_id == customer.id).all()
-    node = db.query(Node).filter(Node.id == customer.node_id).first() if customer.node_id else None
-
+def evaluate_customer_signals(
+    customer: Customer,
+    usage: Optional[UsageRecord],
+    tickets: List[Ticket],
+    invoices: List[Invoice],
+    node: Optional[Node]
+) -> Tuple[float, str, float, List[ContributingSignal], str, float]:
     score = 10.0
     factors: List[ContributingSignal] = []
 
@@ -127,19 +128,51 @@ def calculate_customer_churn_score(customer: Customer, db: Session) -> Tuple[flo
 
     return round(final_score, 1), risk_level, round(confidence, 2), factors, suggested_action, estimated_rev_loss
 
+def calculate_customer_churn_score(customer: Customer, db: Session) -> Tuple[float, str, float, List[ContributingSignal], str, float]:
+    usage = db.query(UsageRecord).filter(UsageRecord.customer_id == customer.id).first()
+    tickets = db.query(Ticket).filter(Ticket.customer_id == customer.id).all()
+    invoices = db.query(Invoice).filter(Invoice.customer_id == customer.id).all()
+    node = db.query(Node).filter(Node.id == customer.node_id).first() if customer.node_id else None
+    return evaluate_customer_signals(customer, usage, tickets, invoices, node)
+
 def get_at_risk_customers(db: Session, min_score: float = 30.0) -> List[ChurnCustomerPrediction]:
     customers = db.query(Customer).filter(Customer.status != 'Churned').all()
-    results = []
+    if not customers:
+        return []
 
+    # Batch fetch all related data in single round trips
+    all_usage = {u.customer_id: u for u in db.query(UsageRecord).all()}
+    
+    all_tickets: Dict[int, List[Ticket]] = {}
+    for t in db.query(Ticket).all():
+        all_tickets.setdefault(t.customer_id, []).append(t)
+
+    all_invoices: Dict[int, List[Invoice]] = {}
+    for inv in db.query(Invoice).all():
+        all_invoices.setdefault(inv.customer_id, []).append(inv)
+
+    all_nodes = {n.id: n for n in db.query(Node).all()}
+
+    pending_rec_ids = {
+        r.target_entity_id for r in db.query(Recommendation.target_entity_id).filter(
+            Recommendation.source_module == 'Churn Prediction & Retention AI',
+            Recommendation.target_entity_type == 'Customer',
+            Recommendation.status == 'PENDING'
+        ).all()
+    }
+
+    results = []
     for c in customers:
-        score, risk_lvl, conf, factors, action, rev_risk = calculate_customer_churn_score(c, db)
+        usage = all_usage.get(c.id)
+        tickets = all_tickets.get(c.id, [])
+        invoices = all_invoices.get(c.id, [])
+        node = all_nodes.get(c.node_id) if c.node_id else None
+
+        score, risk_lvl, conf, factors, action, rev_risk = evaluate_customer_signals(
+            c, usage, tickets, invoices, node
+        )
         if score >= min_score:
-            has_pending = db.query(Recommendation).filter(
-                Recommendation.source_module == 'Churn Prediction & Retention AI',
-                Recommendation.target_entity_type == 'Customer',
-                Recommendation.target_entity_id == c.id,
-                Recommendation.status == 'PENDING'
-            ).first() is not None
+            has_pending = c.id in pending_rec_ids
 
             results.append(ChurnCustomerPrediction(
                 customer_id=c.id,

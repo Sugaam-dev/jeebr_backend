@@ -22,15 +22,14 @@ def list_at_risk_customers(
 def propose_retention_action(
     req: RecommendRetentionRequest,
     db: Session = Depends(get_db),
-    current_user: User = Depends(require_roles(["Care", "Executive", "Admin"]))
+    current_user: User = Depends(get_current_user)
 ):
     customer = db.query(Customer).filter(Customer.id == req.customer_id).first()
     if not customer:
         raise HTTPException(status_code=404, detail="Customer not found")
 
-    score, risk_lvl, factors, suggested_action, rev_risk = calculate_customer_churn_score(customer, db)
+    score, risk_lvl, confidence, factors, suggested_action, rev_risk = calculate_customer_churn_score(customer, db)
     action_text = req.action_type or suggested_action
-    confidence = min(0.98, max(0.80, score / 100.0 + 0.15))
 
     rec = create_or_get_recommendation(
         db=db,

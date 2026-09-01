@@ -280,7 +280,7 @@ def seed_database():
 
         db.commit()
 
-        print("5. Seeding Pre-Generated AI Recommendations & Audit Logs...")
+        print("5. Seeding Pre-Generated AI Recommendations & Audit Logs across ALL 5 Modules...")
         admin_user = next(u for u in users if u.role == "Admin")
         noc_user = next(u for u in users if u.role == "NOC")
         care_user = next(u for u in users if u.role == "Care")
@@ -337,16 +337,69 @@ def seed_database():
         )
         db.add(r2)
 
-        # Recommendation 3: Revenue Assurance (Pending)
-        anomaly_inv = next(inv for inv in invoices if inv.anomaly_flag and inv.anomaly_type == 'Plan Mismatch')
+        # Recommendation 3: Intelligent Customer Journeys (Pending)
+        complaint_c = next(c for c, _, _ in customers if c.current_stage == 'Complaint')
         r3 = Recommendation(
+            source_module="Intelligent Customer Journeys",
+            target_entity_type="Customer",
+            target_entity_id=complaint_c.id,
+            target_entity_label=f"{complaint_c.name} ({complaint_c.customer_code})",
+            title=f"Next-Best-Action - Stage: Complaint ({complaint_c.name})",
+            description=f"Subscriber in Complaint lifecycle stage with active fiber ticket. Recommended proactive SLA waiver and VIP technician escalation.",
+            recommended_action=f"Proactive SLA Credit Guarantee (INR 250) + Priority VIP Technician Escalation via Direct Phone Call.",
+            confidence_score=0.95,
+            status="PENDING",
+            action_payload={
+                "customer_code": complaint_c.customer_code,
+                "stage": "Complaint",
+                "locality": complaint_c.locality,
+                "channel": "Direct Phone Call by Care Lead",
+                "signals": [
+                    {"signal": "Lifecycle Stage", "value": "Complaint", "weight": "+35 pts"},
+                    {"signal": "NPS Sentiment", "value": f"{complaint_c.nps_score}/10 NPS", "weight": "+25 pts"},
+                    {"signal": "Active Tickets", "value": "Fiber attenuation complaint", "weight": "+30 pts"}
+                ]
+            },
+            created_at=datetime.utcnow() - timedelta(hours=3, minutes=30)
+        )
+        db.add(r3)
+
+        # Recommendation 4: AI-driven OSS/BSS Orchestration (Pending)
+        open_ticket = next(t for t in tickets if t.status == 'Open')
+        r4 = Recommendation(
+            source_module="AI-driven OSS/BSS Orchestration",
+            target_entity_type="Ticket",
+            target_entity_id=open_ticket.id,
+            target_entity_label=f"Ticket {open_ticket.ticket_code} ({open_ticket.category})",
+            title=f"Automated Profile Re-provisioning - {open_ticket.ticket_code}",
+            description=f"AI diagnosed ONT sync loss and packet drops on BRAS cluster. Recommending remote TR-069 QoS bandwidth sync.",
+            recommended_action="Execute remote ONT reset and BRAS QoS bandwidth profile re-synchronization.",
+            confidence_score=0.94,
+            status="PENDING",
+            action_payload={
+                "ticket_code": open_ticket.ticket_code,
+                "category": open_ticket.category,
+                "priority": open_ticket.priority,
+                "workflow_type": "Automated TR-069 Reboot & BRAS QoS Sync",
+                "signals": [
+                    {"signal": "BRAS QoS Sync", "value": "Out-of-sync profile", "weight": "+35 pts"},
+                    {"signal": "Packet Loss", "value": "4.2% drop rate", "weight": "+25 pts"}
+                ]
+            },
+            created_at=datetime.utcnow() - timedelta(hours=4)
+        )
+        db.add(r4)
+
+        # Recommendation 5: Revenue Assurance (Pending)
+        anomaly_inv = next(inv for inv in invoices if inv.anomaly_flag and inv.anomaly_type == 'Plan Mismatch')
+        r5 = Recommendation(
             source_module="Revenue Assurance & Leakage Analytics",
             target_entity_type="Invoice",
             target_entity_id=anomaly_inv.id,
             target_entity_label=f"Invoice {anomaly_inv.invoice_code} (Plan Mismatch)",
-            title=f"Billing Rate Adjustment - ₹{anomaly_inv.leakage_amount:.0f} Leakage",
-            description=f"Subscriber on 500 Mbps plan billed starter tier rate of ₹{anomaly_inv.billed_amount:.0f}. Estimated revenue leakage ₹{anomaly_inv.leakage_amount:.0f}/mo.",
-            recommended_action=f"Issue supplemental invoice for ₹{anomaly_inv.leakage_amount:.0f} and align billing catalog in SAP BRIM.",
+            title=f"Billing Rate Adjustment - INR {anomaly_inv.leakage_amount:.0f} Leakage",
+            description=f"Subscriber on 500 Mbps plan billed starter tier rate of INR {anomaly_inv.billed_amount:.0f}. Estimated revenue leakage INR {anomaly_inv.leakage_amount:.0f}/mo.",
+            recommended_action=f"Issue supplemental invoice for INR {anomaly_inv.leakage_amount:.0f} and align billing catalog in SAP BRIM.",
             confidence_score=0.98,
             status="PENDING",
             action_payload={
@@ -355,32 +408,14 @@ def seed_database():
                 "anomaly_type": anomaly_inv.anomaly_type,
                 "signals": [{"anomaly": "Catalog Plan Rate Mismatch", "leakage": anomaly_inv.leakage_amount}]
             },
-            created_at=datetime.utcnow() - timedelta(hours=4)
+            created_at=datetime.utcnow() - timedelta(hours=5)
         )
-        db.add(r3)
+        db.add(r5)
 
-        # Recommendation 4 & Audit Log (Approved & Executed)
-        r4 = Recommendation(
-            source_module="AI-driven OSS/BSS Orchestration",
-            target_entity_type="Ticket",
-            target_entity_id=tickets[0].id if tickets else 1,
-            target_entity_label=f"Ticket {tickets[0].ticket_code if tickets else 'TCK-2026-01'} (Speed Drop)",
-            title=f"Automated Profile Re-provisioning - {tickets[0].ticket_code if tickets else 'TCK-2026-01'}",
-            description="AI diagnosed ONT sync mismatch on BRAS cluster. Recommending TR-069 remote reset.",
-            recommended_action="Execute remote ONT reset and BRAS QoS bandwidth profile re-synchronization.",
-            confidence_score=0.94,
-            status="EXECUTED",
-            action_payload={"ticket_code": tickets[0].ticket_code if tickets else "TCK-1", "signals": [{"cause": "BRAS QoS sync loss"}]},
-            created_at=datetime.utcnow() - timedelta(hours=12),
-            reviewed_by_id=noc_user.id,
-            reviewed_at=datetime.utcnow() - timedelta(hours=10),
-            review_notes="Approved automated profile push to BRAS."
-        )
-        db.add(r4)
-        db.flush()
-
+        # Historical Executed Recommendations and Audit Logs
+        # Audit Log 1: Orchestration Executed
         audit1 = AuditLog(
-            recommendation_id=r4.id,
+            recommendation_id=None,
             source_module="AI-driven OSS/BSS Orchestration",
             action_taken="Execute remote ONT reset and BRAS QoS bandwidth profile re-synchronization.",
             decision="APPROVED",
@@ -388,8 +423,8 @@ def seed_database():
             user_name=noc_user.full_name,
             user_role=noc_user.role,
             confidence_score=0.94,
-            original_signals={"target": r4.target_entity_label, "cause": "BRAS QoS sync loss"},
-            execution_result={"status": "Executed", "message": "ONT QoS re-synced in 4.2 seconds"},
+            original_signals={"target": "Ticket TCK-20260001", "cause": "BRAS QoS sync loss"},
+            execution_result={"status": "Executed", "message": "ONT QoS re-synced in 4.2 seconds via TR-069"},
             timestamp=datetime.utcnow() - timedelta(hours=10)
         )
         db.add(audit1)
@@ -398,7 +433,7 @@ def seed_database():
         audit2 = AuditLog(
             recommendation_id=None,
             source_module="Revenue Assurance & Leakage Analytics",
-            action_taken="Revoke duplicate downtime credit voucher of ₹400.",
+            action_taken="Revoke duplicate downtime credit voucher of INR 400.",
             decision="APPROVED",
             user_id=rev_user.id,
             user_name=rev_user.full_name,
@@ -426,8 +461,40 @@ def seed_database():
         )
         db.add(audit3)
 
+        # Audit Log 4: Journey Next-Best-Action Executed
+        audit4 = AuditLog(
+            recommendation_id=None,
+            source_module="Intelligent Customer Journeys",
+            action_taken="Send WhatsApp 1-Click Digital KYC & Fiber Installation Slot Scheduler.",
+            decision="APPROVED",
+            user_id=care_user.id,
+            user_name=care_user.full_name,
+            user_role=care_user.role,
+            confidence_score=0.93,
+            original_signals={"stage": "Acquisition", "channel": "WhatsApp Interactive"},
+            execution_result={"status": "Message sent via WhatsApp API", "slot_scheduled": "Tomorrow 10:00 AM"},
+            timestamp=datetime.utcnow() - timedelta(days=2)
+        )
+        db.add(audit4)
+
+        # Audit Log 5: Predictive Assurance Field Dispatch Executed
+        audit5 = AuditLog(
+            recommendation_id=None,
+            source_module="Predictive Service Assurance",
+            action_taken="Dispatch Field Splicing Technician to Andheri MIDC Hub.",
+            decision="APPROVED",
+            user_id=noc_user.id,
+            user_name=noc_user.full_name,
+            user_role=noc_user.role,
+            confidence_score=0.96,
+            original_signals={"node": "OLT-AND-03", "optical_power": "-28.1 dBm"},
+            execution_result={"status": "Field technician assigned #FDO-2026-772", "calibration": "Completed"},
+            timestamp=datetime.utcnow() - timedelta(days=3)
+        )
+        db.add(audit5)
+
         db.commit()
-        print("Database seeded successfully with ~1,000 customers, nodes, tickets, invoices, recommendations, and audit logs!")
+        print("Database seeded successfully with ~1,000 customers, nodes, tickets, invoices, recommendations (ALL 5 modules), and audit logs!")
     finally:
         db.close()
 

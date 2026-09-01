@@ -34,9 +34,12 @@ def get_cockpit_summary(
 
     # Locality risk distribution
     localities = ["Bandra West", "Andheri East", "BKC", "Powai", "Lower Parel", "Dadar", "Malad West", "Thane West"]
+    loc_counts_raw = db.query(Customer.locality, func.count(Customer.id)).group_by(Customer.locality).all()
+    loc_counts = {loc: count for loc, count in loc_counts_raw}
+    
     loc_dist = []
     for loc in localities:
-        cust_cnt = db.query(Customer).filter(Customer.locality == loc).count()
+        cust_cnt = loc_counts.get(loc, 0)
         at_risk_cnt = sum(1 for c in at_risk_list if c.locality == loc)
         loc_dist.append({
             "locality": loc,
@@ -55,17 +58,21 @@ def get_cockpit_summary(
 
     # Leakage breakdown by anomaly type
     leakage_types = ["Plan Mismatch", "Duplicate Credit", "Unbilled Usage", "Dunning Failure"]
+    leakage_stats_raw = db.query(
+        Invoice.anomaly_type,
+        func.sum(Invoice.leakage_amount),
+        func.count(Invoice.id)
+    ).filter(Invoice.anomaly_flag == True).group_by(Invoice.anomaly_type).all()
+    
+    leakage_stats = {
+        row[0]: {"amount": row[1] or 0.0, "count": row[2] or 0}
+        for row in leakage_stats_raw
+    }
+
     leakage_dist = []
     for lt in leakage_types:
-        amt = db.query(func.sum(Invoice.leakage_amount)).filter(
-            Invoice.anomaly_flag == True,
-            Invoice.anomaly_type == lt
-        ).scalar() or 0.0
-        cnt = db.query(Invoice).filter(
-            Invoice.anomaly_flag == True,
-            Invoice.anomaly_type == lt
-        ).count()
-        leakage_dist.append({"category": lt, "amount": amt, "count": cnt})
+        stat = leakage_stats.get(lt, {"amount": 0.0, "count": 0})
+        leakage_dist.append({"category": lt, "amount": stat["amount"], "count": stat["count"]})
 
     # Module health statuses
     module_statuses = [

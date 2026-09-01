@@ -3,7 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.config import settings
 from app.database import engine, Base
 from app.routers import (
-    auth, customers, assurance, churn, journeys, orchestration, revenue, governance, cockpit
+    auth, customers, assurance, churn, journeys, orchestration, revenue, governance, cockpit, pilot_bundle
 )
 
 # Create database tables
@@ -41,6 +41,7 @@ app.include_router(journeys.router, prefix=settings.API_V1_STR)
 app.include_router(orchestration.router, prefix=settings.API_V1_STR)
 app.include_router(revenue.router, prefix=settings.API_V1_STR)
 app.include_router(governance.router, prefix=settings.API_V1_STR)
+app.include_router(pilot_bundle.router, prefix=settings.API_V1_STR)
 
 @app.get("/")
 def root():

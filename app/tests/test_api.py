@@ -20,7 +20,7 @@ def test_demo_logins():
         tokens[role] = data["access_token"]
     return tokens
 
-def test_4_scored_engines():
+def test_5_intelligence_modules():
     admin_res = client.post("/api/auth/demo-login/Admin")
     admin_token = admin_res.json()["access_token"]
     headers = {"Authorization": f"Bearer {admin_token}"}
@@ -63,38 +63,95 @@ def test_4_scored_engines():
     assert "contributing_signals" in orch_data[0]
     assert len(orch_data[0]["contributing_signals"]) > 0
 
-def test_rbac_and_governance():
-    noc_res = client.post("/api/auth/demo-login/NOC")
-    noc_token = noc_res.json()["access_token"]
-    noc_headers = {"Authorization": f"Bearer {noc_token}"}
+    # 5. Intelligent Customer Journeys Engine & Funnel
+    journey_res = client.get("/api/journeys/next-best-actions", headers=headers)
+    assert journey_res.status_code == 200
+    journey_data = journey_res.json()
+    assert len(journey_data) > 0
+    assert "next_best_action" in journey_data[0]
+    assert "action_reason" in journey_data[0]
+    assert "suggested_channel" in journey_data[0]
+    assert "current_stage" in journey_data[0]
+    assert "contributing_signals" in journey_data[0]
+    assert len(journey_data[0]["contributing_signals"]) > 0
 
-    rev_res = client.post("/api/auth/demo-login/Revenue")
-    rev_token = rev_res.json()["access_token"]
-    rev_headers = {"Authorization": f"Bearer {rev_token}"}
+    funnel_res = client.get("/api/journeys/funnel-summary", headers=headers)
+    assert funnel_res.status_code == 200
+    funnel_data = funnel_res.json()
+    assert funnel_data["total_customers"] > 0
+    assert len(funnel_data["stages"]) == 6
 
-    # Propose Revenue Recommendation
-    rev_list = client.get("/api/revenue/leakages", headers=rev_headers).json()
-    rec_res = client.post("/api/revenue/recommend", json={"invoice_id": rev_list[0]["invoice_id"]}, headers=rev_headers)
+def test_pilot_bundle_scenario():
+    admin_res = client.post("/api/auth/demo-login/Admin")
+    admin_token = admin_res.json()["access_token"]
+    headers = {"Authorization": f"Bearer {admin_token}"}
+
+    scenario_res = client.get("/api/pilot-bundle/scenario?node_code=OLT-BND-01", headers=headers)
+    assert scenario_res.status_code == 200
+    scenario = scenario_res.json()
+    assert scenario["scenario_id"] == "scenario-bandra-cascading-churn"
+    assert scenario["node"]["node_code"] == "OLT-BND-01"
+    assert scenario["impacted_customer"]["id"] > 0
+    assert len(scenario["trace_steps"]) == 6
+
+def test_rbac_and_governance_matrix():
+    tokens = test_demo_logins()
+    noc_headers = {"Authorization": f"Bearer {tokens['NOC']}"}
+    care_headers = {"Authorization": f"Bearer {tokens['Care']}"}
+    rev_headers = {"Authorization": f"Bearer {tokens['Revenue']}"}
+    exec_headers = {"Authorization": f"Bearer {tokens['Executive']}"}
+    admin_headers = {"Authorization": f"Bearer {tokens['Admin']}"}
+
+    # Verify initial pending queue contains recommendations across modules
+    pending_recs = client.get("/api/governance/recommendations?status=PENDING", headers=admin_headers).json()
+    assert len(pending_recs) >= 5, "Pending recommendations must exist for all 5 modules"
+    
+    modules_in_queue = set(r["source_module"] for r in pending_recs)
+    assert "Predictive Service Assurance" in modules_in_queue
+    assert "Churn Prediction & Retention AI" in modules_in_queue
+    assert "Intelligent Customer Journeys" in modules_in_queue
+    assert "AI-driven OSS/BSS Orchestration" in modules_in_queue
+    assert "Revenue Assurance & Leakage Analytics" in modules_in_queue
+
+    # 1. Propose and test Care-domain NBA recommendation
+    journey_list = client.get("/api/journeys/next-best-actions", headers=care_headers).json()
+    cust_target = next(j for j in journey_list if j["current_stage"] == "Renewal")
+    rec_res = client.post("/api/journeys/recommend", json={"customer_id": cust_target["customer_id"]}, headers=care_headers)
     assert rec_res.status_code == 200
-    rec_id = rec_res.json()["id"]
+    j_rec_id = rec_res.json()["id"]
 
-    # NOC user should be forbidden from approving Revenue recommendation
-    noc_try = client.post("/api/governance/approve", json={"recommendation_id": rec_id}, headers=noc_headers)
-    assert noc_try.status_code == 403, "NOC user must not approve revenue recommendation"
+    # NOC user should be forbidden (403) from approving Care journey recommendation
+    noc_try = client.post("/api/governance/approve", json={"recommendation_id": j_rec_id}, headers=noc_headers)
+    assert noc_try.status_code == 403, "NOC user must not approve journey recommendation"
 
-    # Revenue user CAN approve
-    rev_approve = client.post("/api/governance/approve", json={"recommendation_id": rec_id, "notes": "Approved by Revenue Lead"}, headers=rev_headers)
-    assert rev_approve.status_code == 200
-    assert rev_approve.json()["status"] in ["APPROVED", "EXECUTED"]
+    # Executive user should be forbidden (403) from approving (read-only)
+    exec_try = client.post("/api/governance/approve", json={"recommendation_id": j_rec_id}, headers=exec_headers)
+    assert exec_try.status_code == 403, "Executive user must not approve actions"
+
+    # Care user CAN approve
+    care_app = client.post("/api/governance/approve", json={"recommendation_id": j_rec_id, "notes": "Approved by Care Lead"}, headers=care_headers)
+    assert care_app.status_code == 200
+    assert care_app.json()["status"] in ["APPROVED", "EXECUTED"]
+
+    # Verify Audit Trail recorded the execution
+    audits = client.get("/api/governance/audit-trail", headers=admin_headers).json()
+    assert len(audits) >= 5
+    latest_audit = audits[0]
+    assert latest_audit["user_name"] == "Pooja Sharma"
+    assert latest_audit["user_role"] == "Care"
+    assert latest_audit["decision"] == "APPROVED"
 
 if __name__ == "__main__":
-    print("Running updated test suite...")
+    print("Running updated comprehensive test suite...")
     test_health()
     print("[PASS] Health check")
     test_demo_logins()
-    print("[PASS] All 5 Demo logins")
-    test_4_scored_engines()
-    print("[PASS] All 4 Flagship Scored Engines (Explainable Signals & Confidence)")
-    test_rbac_and_governance()
-    print("[PASS] Governance RBAC & Audit Execution")
-    print("ALL TESTS PASSED!")
+    print("[PASS] All 5 Demo logins (Executive, NOC, Care, Revenue, Admin)")
+    test_5_intelligence_modules()
+    print("[PASS] All 5 Intelligence Modules (Assurance, Churn, Revenue, Orchestration, Journeys)")
+    test_pilot_bundle_scenario()
+    print("[PASS] Pilot Bundle Connected E2E Trace Scenario")
+    test_rbac_and_governance_matrix()
+    print("[PASS] Governance RBAC Permissions Matrix & Audit Trail Execution")
+    print("ALL TESTS PASSED WITH 100% SUCCESS!")
+

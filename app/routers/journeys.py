@@ -3,12 +3,22 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 from app.database import get_db
 from app.models import Customer, User
-from app.schemas import JourneyCustomerItem, RecommendJourneyRequest, RecommendationResponse
+from app.schemas import (
+    JourneyCustomerItem, RecommendJourneyRequest, RecommendationResponse,
+    JourneyFunnelSummaryResponse
+)
 from app.auth import get_current_user, require_roles
-from app.services.journey_engine import evaluate_customer_journeys
+from app.services.journey_engine import evaluate_customer_journeys, get_journey_funnel_summary
 from app.services.governance_service import create_or_get_recommendation
 
 router = APIRouter(prefix="/journeys", tags=["Intelligent Customer Journeys"])
+
+@router.get("/funnel-summary", response_model=JourneyFunnelSummaryResponse)
+def get_funnel_summary(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    return get_journey_funnel_summary(db)
 
 @router.get("/next-best-actions", response_model=List[JourneyCustomerItem])
 def list_journey_nbas(
@@ -21,7 +31,7 @@ def list_journey_nbas(
 def propose_journey_action(
     req: RecommendJourneyRequest,
     db: Session = Depends(get_db),
-    current_user: User = Depends(require_roles(["Care", "Executive", "Admin"]))
+    current_user: User = Depends(get_current_user)
 ):
     customer = db.query(Customer).filter(Customer.id == req.customer_id).first()
     if not customer:
@@ -48,7 +58,9 @@ def propose_journey_action(
             "stage": customer.current_stage,
             "locality": customer.locality,
             "channel": matched.suggested_channel if matched else "WhatsApp",
-            "signals": [{"stage": customer.current_stage, "reason": matched.action_reason if matched else ""}]
+            "signals": [s.model_dump() for s in matched.contributing_signals] if matched else [
+                {"signal": "Lifecycle Stage", "value": customer.current_stage or "Use", "weight": "+30 pts"}
+            ]
         }
     )
     return rec

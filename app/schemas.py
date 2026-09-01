@@ -186,7 +186,23 @@ class JourneyCustomerItem(BaseModel):
     action_reason: str
     suggested_channel: str
     confidence_score: float
+    urgency_level: str = "Medium"  # Critical, High, Medium, Low
+    contributing_signals: List[ContributingSignal] = []
     has_pending_recommendation: bool = False
+
+class JourneyStageStat(BaseModel):
+    stage: str
+    count: int
+    percentage: float
+    avg_nps: float
+    total_arpu: float
+    health_status: str
+
+class JourneyFunnelSummaryResponse(BaseModel):
+    total_customers: int
+    stages: List[JourneyStageStat]
+    top_nba_channels: List[Dict[str, Any]]
+    active_proposals_count: int
 
 class RecommendJourneyRequest(BaseModel):
     customer_id: int
@@ -319,3 +335,35 @@ class CockpitSummaryResponse(BaseModel):
     churn_risk_distribution: List[Dict[str, Any]]
     leakage_by_category: List[Dict[str, Any]]
     recent_audit_events: List[AuditLogResponse]
+
+
+# Pilot Bundle E2E Connected Trace Schemas
+class PilotBundleTraceStep(BaseModel):
+    step_number: int
+    loop_phase: str  # Observe, Predict, Recommend, Approve, Execute, Learn
+    module_name: str
+    title: str
+    subtitle: str
+    status: str  # Triggered, Scored, Queued, Approved, Executed, Completed
+    primary_metric: str
+    primary_metric_label: str
+    confidence_score: float
+    description: str
+    entity_label: str
+    signals: List[Dict[str, Any]] = []
+    actions_available: List[Dict[str, Any]] = []
+    execution_receipt: Optional[Dict[str, Any]] = None
+
+class PilotBundleScenarioResponse(BaseModel):
+    scenario_id: str
+    scenario_title: str
+    scenario_summary: str
+    node: NodeResponse
+    impacted_customer: CustomerListResponse
+    churn_prediction: ChurnCustomerPrediction
+    journey_item: JourneyCustomerItem
+    related_tickets: List[TicketSummary]
+    related_recommendations: List[RecommendationResponse]
+    related_audit_logs: List[AuditLogResponse]
+    trace_steps: List[PilotBundleTraceStep]
+

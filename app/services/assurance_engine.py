@@ -1,21 +1,43 @@
-from typing import List
+from typing import List, Dict
 from sqlalchemy.orm import Session
 from app.models import Node, Customer, Ticket, Recommendation
 from app.schemas import NodeDegradationPrediction, ContributingSignal
 
 def evaluate_node_degradations(db: Session) -> List[NodeDegradationPrediction]:
     nodes = db.query(Node).all()
-    predictions = []
+    if not nodes:
+        return []
 
-    for node in nodes:
-        impacted_customers = db.query(Customer).filter(Customer.node_id == node.id).all()
-        impacted_count = len(impacted_customers)
-        corp_count = sum(1 for c in impacted_customers if c.segment == 'ILL-Corporate')
-        open_tickets = db.query(Ticket).filter(
-            Ticket.node_id == node.id,
-            Ticket.status.in_(['Open', 'In-Progress'])
+    # Batch queries
+    all_customers = db.query(Customer.node_id, Customer.segment).filter(Customer.node_id.isnot(None)).all()
+    node_cust_counts: Dict[int, int] = {}
+    node_corp_counts: Dict[int, int] = {}
+    for node_id, segment in all_customers:
+        node_cust_counts[node_id] = node_cust_counts.get(node_id, 0) + 1
+        if segment == 'ILL-Corporate':
+            node_corp_counts[node_id] = node_corp_counts.get(node_id, 0) + 1
+
+    open_tickets = db.query(Ticket.node_id).filter(
+        Ticket.node_id.isnot(None),
+        Ticket.status.in_(['Open', 'In-Progress'])
+    ).all()
+    node_ticket_counts: Dict[int, int] = {}
+    for (node_id,) in open_tickets:
+        node_ticket_counts[node_id] = node_ticket_counts.get(node_id, 0) + 1
+
+    pending_rec_node_ids = {
+        r.target_entity_id for r in db.query(Recommendation.target_entity_id).filter(
+            Recommendation.source_module == 'Predictive Service Assurance',
+            Recommendation.target_entity_type == 'Node',
+            Recommendation.status == 'PENDING'
         ).all()
-        open_ticket_count = len(open_tickets)
+    }
+
+    predictions = []
+    for node in nodes:
+        impacted_count = node_cust_counts.get(node.id, 0)
+        corp_count = node_corp_counts.get(node.id, 0)
+        open_ticket_count = node_ticket_counts.get(node.id, 0)
 
         opt_penalty = 0.0
         if node.optical_power_dbm < -26.5:
@@ -91,12 +113,7 @@ def evaluate_node_degradations(db: Session) -> List[NodeDegradationPrediction]:
             )
         ]
 
-        has_pending = db.query(Recommendation).filter(
-            Recommendation.source_module == 'Predictive Service Assurance',
-            Recommendation.target_entity_type == 'Node',
-            Recommendation.target_entity_id == node.id,
-            Recommendation.status == 'PENDING'
-        ).first() is not None
+        has_pending = node.id in pending_rec_node_ids
 
         predictions.append(NodeDegradationPrediction(
             node_id=node.id,
