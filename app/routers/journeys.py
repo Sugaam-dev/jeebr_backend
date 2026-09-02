@@ -8,7 +8,9 @@ from app.schemas import (
     JourneyFunnelSummaryResponse
 )
 from app.auth import get_current_user, require_roles
-from app.services.journey_engine import evaluate_customer_journeys, get_journey_funnel_summary
+from app.services.journey_engine import (
+    evaluate_customer_journeys, evaluate_single_customer_journey, get_journey_funnel_summary
+)
 from app.services.governance_service import create_or_get_recommendation
 
 router = APIRouter(prefix="/journeys", tags=["Intelligent Customer Journeys"])
@@ -37,8 +39,7 @@ def propose_journey_action(
     if not customer:
         raise HTTPException(status_code=404, detail="Customer not found")
 
-    items = evaluate_customer_journeys(db)
-    matched = next((i for i in items if i.customer_id == customer.id), None)
+    matched = evaluate_single_customer_journey(customer, db)
     
     action_text = req.action_type or (matched.next_best_action if matched else "Trigger Journey Engagement")
     confidence = matched.confidence_score if matched else 0.88

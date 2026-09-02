@@ -12,7 +12,7 @@ Base.metadata.create_all(bind=engine)
 app = FastAPI(
     title=settings.PROJECT_NAME,
     description="""
-    ### PMRG Solution AI Overlay for Jeebr Internet (Mumbai ISP)
+    ### PMRG Solution AI Overlay for PMRG Internet (Mumbai ISP)
     A governed AI intelligence layer connecting **Network -> Customer -> OSS/BSS -> Operations -> Revenue**
     through the repeatable loop: **Observe -> Predict -> Recommend -> Approve -> Execute -> Learn**.
     """,

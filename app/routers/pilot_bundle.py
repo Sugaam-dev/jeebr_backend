@@ -2,15 +2,15 @@ from typing import Optional, List, Dict, Any
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 from app.database import get_db
-from app.models import Node, Customer, Ticket, Recommendation, AuditLog, User
+from app.models import Node, Customer, Ticket, Recommendation, AuditLog, User, UsageRecord, Invoice
 from app.schemas import (
     PilotBundleScenarioResponse, PilotBundleTraceStep, NodeResponse,
     CustomerListResponse, TicketSummary, RecommendationResponse,
     AuditLogResponse, ChurnCustomerPrediction, JourneyCustomerItem
 )
 from app.auth import get_current_user
-from app.services.churn_engine import calculate_customer_churn_score
-from app.services.journey_engine import evaluate_customer_journeys
+from app.services.churn_engine import evaluate_customer_signals
+from app.services.journey_engine import evaluate_single_customer_journey
 
 router = APIRouter(prefix="/pilot-bundle", tags=["Recommended Pilot Bundle E2E Trace"])
 
@@ -60,8 +60,14 @@ def get_pilot_bundle_scenario(
         ) for t in tickets
     ]
 
-    # 4. Compute Churn Prediction & Explainability
-    score, risk_lvl, confidence, factors, suggested_save, rev_risk = calculate_customer_churn_score(customer, db)
+    # 4. Fetch usage and invoices for this customer once
+    usage = db.query(UsageRecord).filter(UsageRecord.customer_id == customer.id).first()
+    invoices = db.query(Invoice).filter(Invoice.customer_id == customer.id).all()
+
+    # Compute Churn Prediction & Explainability without redundant DB queries
+    score, risk_lvl, confidence, factors, suggested_save, rev_risk = evaluate_customer_signals(
+        customer, usage, tickets, invoices, node
+    )
     churn_pred = ChurnCustomerPrediction(
         customer_id=customer.id,
         customer_code=customer.customer_code,
@@ -80,9 +86,8 @@ def get_pilot_bundle_scenario(
         has_pending_recommendation=False
     )
 
-    # 5. Compute Journey NBA
-    journey_items = evaluate_customer_journeys(db)
-    matched_journey = next((j for j in journey_items if j.customer_id == customer.id), journey_items[0])
+    # 5. Compute Journey NBA directly for this customer (zero extra DB queries)
+    matched_journey = evaluate_single_customer_journey(customer, db, usage=usage, tickets=tickets)
 
     # 6. Fetch related recommendations for both Node and Customer
     recs = db.query(Recommendation).filter(

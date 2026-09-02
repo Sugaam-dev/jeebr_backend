@@ -1,12 +1,12 @@
 from typing import List, Optional
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
 from app.database import get_db
 from app.models import Customer, Node, UsageRecord, Ticket, Invoice, Recommendation
 from app.schemas import CustomerListResponse, Customer360Response, UsageSummary, TicketSummary, InvoiceSummary, NodeResponse
 from app.auth import get_current_user
-from app.services.churn_engine import calculate_customer_churn_score
-from app.services.journey_engine import evaluate_customer_journeys
+from app.services.churn_engine import evaluate_customer_signals
+from app.services.journey_engine import evaluate_single_customer_journey
 
 router = APIRouter(prefix="/customers", tags=["Customers & 360"])
 
@@ -20,7 +20,7 @@ def list_customers(
     db: Session = Depends(get_db),
     current_user = Depends(get_current_user)
 ):
-    query = db.query(Customer)
+    query = db.query(Customer).options(joinedload(Customer.node))
     if search:
         query = query.filter(
             (Customer.name.ilike(f"%{search}%")) |
@@ -72,12 +72,13 @@ def get_customer_360(
     tickets = db.query(Ticket).filter(Ticket.customer_id == customer.id).order_by(Ticket.created_at.desc()).limit(10).all()
     invoices = db.query(Invoice).filter(Invoice.customer_id == customer.id).order_by(Invoice.due_date.desc()).limit(10).all()
 
-    # Calculate churn score and factor breakdown
-    score, risk_lvl, conf, factors, action, _ = calculate_customer_churn_score(customer, db)
+    # Calculate churn score and factor breakdown (reusing in-memory data)
+    score, risk_lvl, conf, factors, action, _ = evaluate_customer_signals(
+        customer, usage, tickets, invoices, node
+    )
 
-    # Calculate next-best-action
-    journeys = evaluate_customer_journeys(db)
-    customer_journey = next((j for j in journeys if j.customer_id == customer.id), None)
+    # Calculate next-best-action directly for this customer (zero extra DB queries)
+    customer_journey = evaluate_single_customer_journey(customer, db, usage=usage, tickets=tickets)
     nba_payload = {
         "action": customer_journey.next_best_action if customer_journey else "Deliver Monthly Digital Health Summary",
         "reason": customer_journey.action_reason if customer_journey else "Standard lifecycle cycle",

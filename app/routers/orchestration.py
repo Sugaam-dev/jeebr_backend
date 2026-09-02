@@ -5,7 +5,9 @@ from app.database import get_db
 from app.models import Ticket, User
 from app.schemas import OrchestrationTicketItem, RecommendOrchestrationRequest, RecommendationResponse
 from app.auth import get_current_user, require_roles
-from app.services.orchestration_engine import evaluate_ticket_orchestrations
+from app.services.orchestration_engine import (
+    evaluate_ticket_orchestrations, evaluate_single_ticket_orchestration
+)
 from app.services.governance_service import create_or_get_recommendation
 
 router = APIRouter(prefix="/orchestration", tags=["AI-driven OSS/BSS Orchestration"])
@@ -27,8 +29,7 @@ def propose_orchestration_workflow(
     if not ticket:
         raise HTTPException(status_code=404, detail="Ticket not found")
 
-    items = evaluate_ticket_orchestrations(db)
-    matched = next((i for i in items if i.ticket_id == ticket.id), None)
+    matched = evaluate_single_ticket_orchestration(ticket, db)
     
     action_text = req.workflow_action or (matched.recommended_orchestration if matched else "Trigger OSS Remediation")
     confidence = matched.confidence_score if matched else 0.92

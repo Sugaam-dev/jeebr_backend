@@ -15,11 +15,11 @@ def seed_database():
     try:
         print("1. Seeding Demo Users...")
         users_data = [
-            ("executive@jeebr.in", "admin123", "Rajesh Singhania", "Executive"),
-            ("noc@jeebr.in", "admin123", "Vikram Rathore", "NOC"),
-            ("care@jeebr.in", "admin123", "Pooja Sharma", "Care"),
-            ("revenue@jeebr.in", "admin123", "Anand Kulkarni", "Revenue"),
-            ("admin@jeebr.in", "admin123", "PMRG AI Administrator", "Admin"),
+            ("executive@pmrg.in", "admin123", "Rajesh Singhania", "Executive"),
+            ("noc@pmrg.in", "admin123", "Vikram Rathore", "NOC"),
+            ("care@pmrg.in", "admin123", "Pooja Sharma", "Care"),
+            ("revenue@pmrg.in", "admin123", "Anand Kulkarni", "Revenue"),
+            ("admin@pmrg.in", "admin123", "PMRG AI Administrator", "Admin"),
         ]
 
         users = []

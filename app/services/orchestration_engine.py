@@ -1,12 +1,19 @@
-from typing import List, Tuple
+from typing import List, Tuple, Optional, Dict
 from datetime import datetime
 from sqlalchemy.orm import Session
 from app.models import Ticket, Customer, Node, Recommendation
 from app.schemas import OrchestrationTicketItem, ContributingSignal
 
-def evaluate_ticket_triage(ticket: Ticket, db: Session) -> Tuple[float, str, str, str, float, str, List[ContributingSignal]]:
-    customer = db.query(Customer).filter(Customer.id == ticket.customer_id).first()
-    node = db.query(Node).filter(Node.id == ticket.node_id).first() if ticket.node_id else None
+def evaluate_ticket_triage(
+    ticket: Ticket,
+    db: Session,
+    customer: Optional[Customer] = None,
+    node: Optional[Node] = None
+) -> Tuple[float, str, str, str, float, str, List[ContributingSignal]]:
+    if customer is None and ticket.customer_id:
+        customer = db.query(Customer).filter(Customer.id == ticket.customer_id).first()
+    if node is None and ticket.node_id:
+        node = db.query(Node).filter(Node.id == ticket.node_id).first()
 
     score = 20.0
     factors: List[ContributingSignal] = []
@@ -125,50 +132,93 @@ def evaluate_ticket_triage(ticket: Ticket, db: Session) -> Tuple[float, str, str
 
     return round(final_score, 1), priority_level, workflow_type, rec_action, round(confidence, 2), sla_risk, factors
 
-def evaluate_ticket_orchestrations(db: Session) -> List[OrchestrationTicketItem]:
-    tickets = db.query(Ticket).filter(Ticket.status.in_(['Open', 'In-Progress'])).all()
-    queue = []
-
-    for t in tickets:
-        customer = db.query(Customer).filter(Customer.id == t.customer_id).first()
-        node = db.query(Node).filter(Node.id == t.node_id).first() if t.node_id else None
-
-        cust_name = customer.name if customer else "Unknown"
-        cust_segment = customer.segment if customer else "Home Broadband"
-        locality = customer.locality if customer else (node.area if node else "Mumbai")
-
-        score, priority_lvl, wf_type, rec_action, conf, sla_risk, factors = evaluate_ticket_triage(t, db)
-
-        has_pending = db.query(Recommendation).filter(
+def evaluate_single_ticket_orchestration(
+    ticket: Ticket,
+    db: Session,
+    customer: Optional[Customer] = None,
+    node: Optional[Node] = None,
+    has_pending: Optional[bool] = None
+) -> OrchestrationTicketItem:
+    if customer is None and ticket.customer_id:
+        customer = db.query(Customer).filter(Customer.id == ticket.customer_id).first()
+    if node is None and ticket.node_id:
+        node = db.query(Node).filter(Node.id == ticket.node_id).first()
+    if has_pending is None:
+        has_pending = db.query(Recommendation.id).filter(
             Recommendation.source_module == 'AI-driven OSS/BSS Orchestration',
             Recommendation.target_entity_type == 'Ticket',
-            Recommendation.target_entity_id == t.id,
+            Recommendation.target_entity_id == ticket.id,
             Recommendation.status == 'PENDING'
         ).first() is not None
 
-        queue.append(OrchestrationTicketItem(
-            ticket_id=t.id,
-            ticket_code=t.ticket_code,
-            customer_id=t.customer_id,
-            customer_name=cust_name,
-            customer_segment=cust_segment,
-            locality=locality,
-            category=t.category,
-            priority=t.priority,
-            status=t.status,
-            created_at=t.created_at,
-            repeat_flag=t.repeat_flag,
-            description=t.description,
-            triage_priority_score=score,
-            priority_level=priority_lvl,
-            recommended_orchestration=rec_action,
-            workflow_type=wf_type,
-            confidence_score=conf,
-            sla_deadline=t.sla_deadline,
-            sla_breach_risk=sla_risk,
-            contributing_signals=factors,
-            has_pending_recommendation=has_pending
-        ))
+    cust_name = customer.name if customer else "Unknown"
+    cust_segment = customer.segment if customer else "Home Broadband"
+    locality = customer.locality if customer else (node.area if node else "Mumbai")
+
+    score, priority_lvl, wf_type, rec_action, conf, sla_risk, factors = evaluate_ticket_triage(
+        ticket, db, customer=customer, node=node
+    )
+
+    return OrchestrationTicketItem(
+        ticket_id=ticket.id,
+        ticket_code=ticket.ticket_code,
+        customer_id=ticket.customer_id,
+        customer_name=cust_name,
+        customer_segment=cust_segment,
+        locality=locality,
+        category=ticket.category,
+        priority=ticket.priority,
+        status=ticket.status,
+        created_at=ticket.created_at,
+        repeat_flag=ticket.repeat_flag,
+        description=ticket.description,
+        triage_priority_score=score,
+        priority_level=priority_lvl,
+        recommended_orchestration=rec_action,
+        workflow_type=wf_type,
+        confidence_score=conf,
+        sla_deadline=ticket.sla_deadline,
+        sla_breach_risk=sla_risk,
+        contributing_signals=factors,
+        has_pending_recommendation=has_pending
+    )
+
+def evaluate_ticket_orchestrations(db: Session) -> List[OrchestrationTicketItem]:
+    tickets = db.query(Ticket).filter(Ticket.status.in_(['Open', 'In-Progress'])).all()
+    if not tickets:
+        return []
+
+    # Batch fetch customers, nodes, and recommendations in single round trips
+    cust_ids = {t.customer_id for t in tickets if t.customer_id}
+    customers_map = {c.id: c for c in db.query(Customer).filter(Customer.id.in_(cust_ids)).all()} if cust_ids else {}
+
+    node_ids = {t.node_id for t in tickets if t.node_id}
+    nodes_map = {n.id: n for n in db.query(Node).filter(Node.id.in_(node_ids)).all()} if node_ids else {}
+
+    ticket_ids = {t.id for t in tickets}
+    pending_recs = {
+        r.target_entity_id for r in db.query(Recommendation.target_entity_id).filter(
+            Recommendation.source_module == 'AI-driven OSS/BSS Orchestration',
+            Recommendation.target_entity_type == 'Ticket',
+            Recommendation.target_entity_id.in_(ticket_ids),
+            Recommendation.status == 'PENDING'
+        ).all()
+    } if ticket_ids else set()
+
+    queue = []
+    for t in tickets:
+        customer = customers_map.get(t.customer_id)
+        node = nodes_map.get(t.node_id) if t.node_id else None
+        has_pending = t.id in pending_recs
+
+        item = evaluate_single_ticket_orchestration(
+            ticket=t,
+            db=db,
+            customer=customer,
+            node=node,
+            has_pending=has_pending
+        )
+        queue.append(item)
 
     queue.sort(key=lambda x: x.triage_priority_score, reverse=True)
     return queue

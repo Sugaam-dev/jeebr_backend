@@ -164,7 +164,7 @@ def simulate_execution(db: Session, rec: Recommendation) -> Dict[str, Any]:
                 cust.current_stage = 'Use'
             db.commit()
         return {
-            "action": f"Omnichannel Next-Best-Action triggered via WhatsApp Business API & Jeebr Self-Care App for {cust.name if cust else 'subscriber'}",
+            "action": f"Omnichannel Next-Best-Action triggered via WhatsApp Business API & PMRG Self-Care App for {cust.name if cust else 'subscriber'}",
             "status": "Action Triggered",
             "channel_delivery": "Instant WhatsApp notification delivered (Receipt ID #WA-9821)"
         }

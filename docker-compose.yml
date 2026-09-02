@@ -3,7 +3,7 @@ version: '3.8'
 services:
   backend:
     build: .
-    container_name: jeebr_backend
+    container_name: pmrg_backend
     restart: unless-stopped
     ports:
       - "8000:8000"

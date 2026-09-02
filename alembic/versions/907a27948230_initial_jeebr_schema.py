@@ -1,4 +1,4 @@
-"""initial_jeebr_schema
+"""initial_pmrg_schema
 
 Revision ID: 907a27948230
 Revises: 
