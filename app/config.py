@@ -5,14 +5,11 @@ class Settings(BaseSettings):
     PROJECT_NAME: str = 'PMRG AI Overlay for Jeebr Internet'
     API_V1_STR: str = '/api'
     
-    # PostgreSQL Configuration
-    DATABASE_URL: str = os.getenv(
-        'DATABASE_URL', 
-        'postgresql://postgres:Root123@localhost:5432/jeebr_db'
-    )
+    # PostgreSQL Configuration (Supabase / Production)
+    DATABASE_URL: str = os.getenv('DATABASE_URL', '')
     
     # JWT Auth Configuration
-    SECRET_KEY: str = os.getenv('SECRET_KEY', 'pmrg-jeebr-secret-super-key-2026-governed-ai')
+    SECRET_KEY: str = os.getenv('SECRET_KEY', 'super-secret-key-2026-govern-452154215')
     ALGORITHM: str = 'HS256'
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 60 * 24  # 24 hours
     
@@ -25,8 +22,10 @@ class Settings(BaseSettings):
         '*'
     ]
 
-    class Config:
-        case_sensitive = True
-        env_file = ".env"
+    model_config = {
+        "case_sensitive": True,
+        "env_file": ".env",
+        "extra": "ignore"
+    }
 
 settings = Settings()

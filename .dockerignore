@@ -1,0 +1,28 @@
+# Virtual Environment
+venv/
+.venv/
+env/
+ENV/
+
+# Python cache & build artifacts
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Git & IDE
+.git/
+.gitignore
+.idea/
+.vscode/
+
+# Environment secrets
+.env
+
+# Tests & temporary files
+tests/
+scratch/
+*.log
