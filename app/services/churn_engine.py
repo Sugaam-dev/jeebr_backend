@@ -79,6 +79,42 @@ def evaluate_customer_signals(
             impact_type="negative"
         ))
 
+    # Prepaid-specific behavioral signals
+    if getattr(customer, 'customer_type', 'Prepaid') == 'Prepaid':
+        days_left = getattr(customer, 'days_to_expiry', 14)
+        if days_left < 0:
+            expiry_pts = min(35.0, abs(days_left) * 7.0)
+            score += expiry_pts
+            factors.append(ContributingSignal(
+                signal="Recharge Lag / Validity Expired",
+                value=f"{abs(days_left)} days in grace period",
+                weight=f"+{expiry_pts:.0f} pts",
+                detail="Subscriber pack validity expired without renewal pack purchased.",
+                impact_type="negative"
+            ))
+        elif days_left <= 2:
+            score += 15.0
+            factors.append(ContributingSignal(
+                signal="Imminent Pack Expiry",
+                value=f"Expires in {days_left} days",
+                weight="+15 pts",
+                detail="Prepaid renewal cycle upcoming within 48 hours.",
+                impact_type="negative"
+            ))
+
+        # Daily quota exhaustion
+        used_gb = getattr(customer, 'daily_data_used_gb', 0.8)
+        quota_gb = getattr(customer, 'daily_data_quota_gb', 1.5)
+        if quota_gb > 0 and used_gb >= quota_gb * 0.90:
+            score += 18.0
+            factors.append(ContributingSignal(
+                signal="Daily Data Cap Exhaustion",
+                value=f"{used_gb:.1f}/{quota_gb:.1f} GB ({int(used_gb/quota_gb*100)}%)",
+                weight="+18 pts",
+                detail="Subscriber frequently hits daily FUP threshold, experiencing 64 Kbps speed throttle.",
+                impact_type="negative"
+            ))
+
     if customer.tenure_months < 6:
         score += 8.0
         factors.append(ContributingSignal(
@@ -111,20 +147,38 @@ def evaluate_customer_signals(
     final_score = min(99.0, max(5.0, score))
     confidence = min(0.98, max(0.82, final_score / 100.0 + 0.15))
 
+    is_prepaid = getattr(customer, 'customer_type', 'Prepaid') == 'Prepaid'
     if final_score >= 70.0:
         risk_level = 'Critical'
-        suggested_action = "Authorize VIP Account Manager Outreach + 20% Retention Concession & Proactive ONT Wi-Fi 6 Inspection"
+        suggested_action = (
+            "Authorize 3-Day Validity Extension + 5GB 5G High-Speed Booster Voucher & 20% UPI Renewal Concession"
+            if is_prepaid else
+            "Authorize VIP Account Manager Outreach + 20% Retention Concession & Dedicated NOC Review"
+        )
     elif final_score >= 45.0:
         risk_level = 'High'
-        suggested_action = "Apply Complimentary 30-Day Speed Boost (300 Mbps) & Schedule Care Satisfaction Follow-up"
+        suggested_action = (
+            "Deliver Instant 3GB 5G Data Booster Top-up & 1-Click WhatsApp Renewal Cashback Link"
+            if is_prepaid else
+            "Apply Complimentary 30-Day Speed Boost (300 Mbps) & Schedule Care Satisfaction Follow-up"
+        )
     elif final_score >= 25.0:
         risk_level = 'Medium'
-        suggested_action = "Deliver Annual Loyalty OTT Bundle Voucher (Disney+ Hotstar / Prime Video) on contract renewal"
+        suggested_action = (
+            "Offer Complimentary 3-Month JioCinema/Hotstar OTT Pack on next 84-Day recharge"
+            if is_prepaid else
+            "Deliver Annual Loyalty OTT Bundle Voucher (Disney+ Hotstar / Prime Video) on contract renewal"
+        )
     else:
         risk_level = 'Low'
-        suggested_action = "Maintain standard engagement and quarterly digital health check-in"
+        suggested_action = (
+            "Automated WhatsApp low-balance & renewal reminder"
+            if is_prepaid else
+            "Maintain standard engagement and quarterly digital health check-in"
+        )
 
-    estimated_rev_loss = customer.arpu * 12.0
+    current_actual_arpu = getattr(customer, 'actual_arpu', customer.arpu)
+    estimated_rev_loss = current_actual_arpu * 12.0
 
     return round(final_score, 1), risk_level, round(confidence, 2), factors, suggested_action, estimated_rev_loss
 
@@ -180,8 +234,15 @@ def get_at_risk_customers(db: Session, min_score: float = 30.0) -> List[ChurnCus
                 name=c.name,
                 locality=c.locality,
                 segment=c.segment,
+                customer_type=c.customer_type or "Prepaid",
                 plan_name=c.plan_name,
-                arpu=c.arpu,
+                plan_price=c.plan_price or c.arpu,
+                revenue_30d=c.revenue_30d if hasattr(c, 'revenue_30d') and c.revenue_30d is not None else (c.actual_arpu or c.arpu),
+                actual_arpu=c.actual_arpu or c.arpu,
+                arpu=c.actual_arpu or c.arpu,
+                recharge_validity_days=c.recharge_validity_days or 28,
+                days_to_expiry=c.days_to_expiry if c.days_to_expiry is not None else 14,
+                validity_status=c.validity_status or "Active",
                 tenure_months=c.tenure_months,
                 churn_risk_score=score,
                 risk_level=risk_lvl,

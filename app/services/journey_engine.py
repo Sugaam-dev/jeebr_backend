@@ -71,54 +71,86 @@ def evaluate_single_customer_journey(
     ))
 
     # Next-Best-Action Decision Logic
+    is_prepaid = getattr(customer, 'customer_type', 'Prepaid') == 'Prepaid'
     if stage == 'Acquisition':
-        nba = "Send 1-Click Digital KYC & Fiber Installation Slot Scheduler"
-        reason = "Prospect completed registration form; pending installation slot selection."
-        channel = "WhatsApp Interactive Message"
+        if is_prepaid:
+            nba = "Deliver 1-Click WhatsApp eSIM Activation & UPI First Recharge Offer"
+            reason = "Prospect completed registration form; pending first recharge selection."
+            channel = "WhatsApp Interactive Message"
+        else:
+            nba = "Send 1-Click Digital KYC & Fiber Installation Slot Scheduler"
+            reason = "Prospect completed registration form; pending installation slot selection."
+            channel = "WhatsApp Interactive Message"
         confidence = 0.94
         urgency = "High"
     elif stage == 'Install':
-        nba = "Trigger Automated ONT Self-Test & Field Engineer Check-in"
-        reason = "Installation completed in last 48h; verify nominal optical power levels."
-        channel = "SMS & Automated IVR"
+        if is_prepaid:
+            nba = "Automated SIM Network Latency Test & Welcome 5GB Data Booster Voucher"
+            reason = "SIM activated in last 48h; verify nominal 5G/4G coverage and latency."
+            channel = "SMS & WhatsApp"
+        else:
+            nba = "Trigger Automated ONT Self-Test & Field Engineer Check-in"
+            reason = "Installation completed in last 48h; verify nominal optical power levels."
+            channel = "SMS & Automated IVR"
         confidence = 0.91
         urgency = "Medium"
     elif stage == 'Complaint':
         cat_name = open_tickets[0].category if open_tickets else 'connectivity'
-        nba = f"Proactive SLA Credit Guarantee (INR 250) + Priority VIP Technician Escalation for {cat_name}"
-        reason = f"Active {cat_name.lower()} incident impacting user experience; NPS detractor risk."
-        channel = "Direct Phone Call by Care Lead"
+        if is_prepaid:
+            nba = f"Instant 5GB 5G High-Speed Compensation Pack + Priority Care Callback for {cat_name}"
+            reason = f"Active {cat_name.lower()} incident impacting mobile streaming; NPS detractor risk."
+            channel = "Direct Phone Call by Care Lead"
+        else:
+            nba = f"Proactive SLA Credit Guarantee (INR 250) + Priority VIP Technician Escalation for {cat_name}"
+            reason = f"Active {cat_name.lower()} incident impacting user experience; NPS detractor risk."
+            channel = "Direct Phone Call by Care Lead"
         confidence = 0.96
         urgency = "Critical"
     elif stage == 'Renewal':
-        nba = f"Offer 15-Month Annual Loyalty Plan (Pay for 10 months, get 5 free) for {customer.plan_name}"
-        reason = f"Tenure {customer.tenure_months} months; contract renewal upcoming in next 15 days."
-        channel = "Email & Customer Portal Banner"
+        if is_prepaid:
+            nba = f"Deliver 1-Click WhatsApp UPI Recharge Link with 5GB Bonus Voucher ({customer.plan_name})"
+            reason = f"Prepaid pack expiring in {customer.days_to_expiry} days; facilitate frictionless renewal."
+            channel = "WhatsApp Interactive UPI Link"
+        else:
+            nba = f"Offer 15-Month Annual Loyalty Plan (Pay for 10 months, get 5 free) for {customer.plan_name}"
+            reason = f"Tenure {customer.tenure_months} months; contract renewal upcoming in next 15 days."
+            channel = "Email & Customer Portal Banner"
         confidence = 0.89
         urgency = "High"
     elif stage == 'Win-back':
-        nba = f"Offer 'Zero-Deposit Fiber Reconnect' with 300 Mbps trial speed + 50% discount"
-        reason = f"Dormant/churned account with historical ARPU of INR {customer.arpu:,.0f}."
-        channel = "Direct Tele-Sales & Executive Outreach"
+        historical_arpu = getattr(customer, 'actual_arpu', customer.arpu)
+        if is_prepaid:
+            nba = f"Deliver 'Reactivate SIM' Special Offer: 28 Days 1.5GB/Day at ₹199 (Save ₹100)"
+            reason = f"Dormant/churned prepaid SIM with historical ARPU of INR {historical_arpu:,.0f}."
+            channel = "WhatsApp & Direct Tele-Calling"
+        else:
+            nba = f"Offer 'Zero-Deposit Fiber Reconnect' with 300 Mbps trial speed + 50% discount"
+            reason = f"Dormant/churned account with historical ARPU of INR {historical_arpu:,.0f}."
+            channel = "Direct Tele-Sales & Executive Outreach"
         confidence = 0.82
         urgency = "High"
     else: # 'Use' stage
         if usage and usage.monthly_gb > usage.quota_gb * 0.85:
-            nba = "Propose Turbo Gigafiber Speed & Unlimited FUP Upgrade"
-            reason = f"Consuming {usage.monthly_gb:.0f}GB ({int(usage.monthly_gb/usage.quota_gb*100)}% of quota)."
-            channel = "PMRG Self-Care App"
+            if is_prepaid:
+                nba = "Propose 5G Unlimited Daily Data Upgrade (2GB/Day Pack + 6GB Booster)"
+                reason = f"Consuming {usage.monthly_gb:.0f}GB ({int(usage.monthly_gb/usage.quota_gb*100)}% of monthly quota)."
+                channel = "MyJio / Airtel Thanks Push Notification"
+            else:
+                nba = "Propose Turbo Gigafiber Speed & Unlimited FUP Upgrade"
+                reason = f"Consuming {usage.monthly_gb:.0f}GB ({int(usage.monthly_gb/usage.quota_gb*100)}% of quota)."
+                channel = "PMRG Self-Care App"
             confidence = 0.88
             urgency = "Medium"
         elif customer.nps_score >= 9:
-            nba = "Invite to 'PMRG Fiber Ambassador' Referral Program (Earn INR 500 bill credit per invite)"
+            nba = "Invite to 'PMRG 5G Ambassador' Referral Program (Earn INR 100 recharge credit per invite)"
             reason = f"High promoter score (NPS {customer.nps_score}/10)."
             channel = "WhatsApp Message"
             confidence = 0.92
             urgency = "Low"
         else:
-            nba = "Deliver Monthly Digital Health Summary & Complimentary OTT Activation"
+            nba = "Deliver Monthly Digital Health Summary & Complimentary JioCinema/Hotstar OTT Voucher"
             reason = "Regular monthly engagement cycle."
-            channel = "Email Newsletter"
+            channel = "WhatsApp & App Notification"
             confidence = 0.80
             urgency = "Low"
 
@@ -128,7 +160,11 @@ def evaluate_single_customer_journey(
         name=customer.name,
         locality=customer.locality,
         segment=customer.segment,
+        customer_type=getattr(customer, 'customer_type', 'Prepaid'),
         plan_name=customer.plan_name,
+        plan_price=getattr(customer, 'plan_price', customer.arpu),
+        revenue_30d=getattr(customer, 'revenue_30d', getattr(customer, 'actual_arpu', customer.arpu)),
+        actual_arpu=getattr(customer, 'actual_arpu', customer.arpu),
         current_stage=stage,
         tenure_months=customer.tenure_months,
         nps_score=customer.nps_score,

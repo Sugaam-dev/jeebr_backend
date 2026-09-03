@@ -16,7 +16,9 @@ def list_customers(
     locality: Optional[str] = None,
     segment: Optional[str] = None,
     status: Optional[str] = None,
-    limit: int = Query(50, le=200),
+    customer_type: Optional[str] = None,
+    stage: Optional[str] = None,
+    limit: int = Query(60, le=200),
     db: Session = Depends(get_db),
     current_user = Depends(get_current_user)
 ):
@@ -25,7 +27,8 @@ def list_customers(
         query = query.filter(
             (Customer.name.ilike(f"%{search}%")) |
             (Customer.customer_code.ilike(f"%{search}%")) |
-            (Customer.email.ilike(f"%{search}%"))
+            (Customer.email.ilike(f"%{search}%")) |
+            (Customer.phone.ilike(f"%{search}%"))
         )
     if locality:
         query = query.filter(Customer.locality == locality)
@@ -33,6 +36,10 @@ def list_customers(
         query = query.filter(Customer.segment == segment)
     if status:
         query = query.filter(Customer.status == status)
+    if customer_type:
+        query = query.filter(Customer.customer_type == customer_type)
+    if stage:
+        query = query.filter(Customer.current_stage == stage)
 
     customers = query.limit(limit).all()
     results = []
@@ -46,8 +53,20 @@ def list_customers(
             phone=c.phone,
             locality=c.locality,
             segment=c.segment,
+            customer_type=c.customer_type or "Prepaid",
             plan_name=c.plan_name,
-            arpu=c.arpu,
+            plan_price=c.plan_price or c.arpu,
+            revenue_30d=c.revenue_30d if hasattr(c, 'revenue_30d') and c.revenue_30d is not None else (c.actual_arpu or c.arpu),
+            actual_arpu=c.actual_arpu or c.arpu,
+            arpu=c.actual_arpu or c.arpu,
+            recharge_validity_days=c.recharge_validity_days or 28,
+            days_to_expiry=c.days_to_expiry if c.days_to_expiry is not None else 14,
+            validity_status=c.validity_status or "Active",
+            daily_data_quota_gb=c.daily_data_quota_gb or 1.5,
+            daily_data_used_gb=c.daily_data_used_gb or 0.8,
+            last_recharge_date=c.last_recharge_date,
+            last_recharge_amount=c.last_recharge_amount or c.plan_price,
+            payment_method=c.payment_method or "UPI",
             tenure_months=c.tenure_months,
             status=c.status,
             current_stage=c.current_stage or 'Use',
@@ -112,8 +131,20 @@ def get_customer_360(
         phone=customer.phone,
         locality=customer.locality,
         segment=customer.segment,
+        customer_type=customer.customer_type or "Prepaid",
         plan_name=customer.plan_name,
-        arpu=customer.arpu,
+        plan_price=customer.plan_price or customer.arpu,
+        revenue_30d=customer.revenue_30d if hasattr(customer, 'revenue_30d') and customer.revenue_30d is not None else (customer.actual_arpu or customer.arpu),
+        actual_arpu=customer.actual_arpu or customer.arpu,
+        arpu=customer.actual_arpu or customer.arpu,
+        recharge_validity_days=customer.recharge_validity_days or 28,
+        days_to_expiry=customer.days_to_expiry if customer.days_to_expiry is not None else 14,
+        validity_status=customer.validity_status or "Active",
+        daily_data_quota_gb=customer.daily_data_quota_gb or 1.5,
+        daily_data_used_gb=customer.daily_data_used_gb or 0.8,
+        last_recharge_date=customer.last_recharge_date,
+        last_recharge_amount=customer.last_recharge_amount or customer.plan_price,
+        payment_method=customer.payment_method or "UPI",
         tenure_months=customer.tenure_months,
         status=customer.status,
         current_stage=customer.current_stage or 'Use',
@@ -169,6 +200,8 @@ def get_customer_360(
         InvoiceSummary(
             id=inv.id,
             invoice_code=inv.invoice_code,
+            transaction_type=inv.transaction_type or ("Base Unlimited Recharge" if customer.customer_type == 'Prepaid' else "Monthly Bill"),
+            payment_method=inv.payment_method or customer.payment_method or "UPI",
             billed_amount=inv.billed_amount,
             due_date=inv.due_date,
             paid_date=inv.paid_date,

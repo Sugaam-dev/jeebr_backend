@@ -13,10 +13,14 @@ router = APIRouter(prefix="/churn", tags=["Churn Prediction & Retention AI"])
 @router.get("/at-risk", response_model=List[ChurnCustomerPrediction])
 def list_at_risk_customers(
     min_score: float = Query(30.0, ge=0.0, le=100.0),
+    customer_type: Optional[str] = Query(None),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
-    return get_at_risk_customers(db, min_score=min_score)
+    results = get_at_risk_customers(db, min_score=min_score)
+    if customer_type:
+        results = [r for r in results if r.customer_type == customer_type]
+    return results
 
 @router.post("/recommend", response_model=RecommendationResponse)
 def propose_retention_action(
@@ -43,9 +47,12 @@ def propose_retention_action(
         confidence_score=round(confidence, 2),
         action_payload={
             "customer_code": customer.customer_code,
+            "customer_type": customer.customer_type,
             "locality": customer.locality,
             "segment": customer.segment,
             "plan_name": customer.plan_name,
+            "plan_price": customer.plan_price,
+            "actual_arpu": customer.actual_arpu,
             "arpu": customer.arpu,
             "churn_score": score,
             "signals": [s.model_dump() if hasattr(s, 'model_dump') else s.dict() if hasattr(s, 'dict') else s for s in factors]

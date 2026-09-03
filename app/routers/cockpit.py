@@ -56,8 +56,30 @@ def get_cockpit_summary(
         {"band": "Low (<25%)", "count": max(0, total_custs - total_at_risk)}
     ]
 
-    # Leakage breakdown by anomaly type
-    leakage_types = ["Plan Mismatch", "Duplicate Credit", "Unbilled Usage", "Dunning Failure"]
+    # Prepaid vs Postpaid metrics & Aggregate ARPU calculations
+    prepaid_count = db.query(Customer).filter(Customer.customer_type == 'Prepaid').count()
+    postpaid_count = db.query(Customer).filter(Customer.customer_type == 'Postpaid').count()
+
+    # Aggregate Revenue during the period (Sum of 30-day recognized customer revenues)
+    prepaid_revenue_30d = db.query(func.sum(Customer.actual_arpu)).filter(Customer.customer_type == 'Prepaid').scalar() or 0.0
+    postpaid_revenue_30d = db.query(func.sum(Customer.actual_arpu)).filter(Customer.customer_type == 'Postpaid').scalar() or 0.0
+    total_monthly_revenue = prepaid_revenue_30d + postpaid_revenue_30d
+
+    # Aggregate business-level ARPU: Total Revenue during the period ÷ Active/Total Subscribers
+    overall_arpu = round(total_monthly_revenue / max(1, total_custs), 1)
+    avg_prepaid_arpu = round(prepaid_revenue_30d / max(1, prepaid_count), 1)
+    avg_postpaid_arpu = round(postpaid_revenue_30d / max(1, postpaid_count), 1)
+
+    # Leakage breakdown by anomaly type (including prepaid telemetry leakages)
+    leakage_types = [
+        "Expired Validity OTT Leakage",
+        "Zero-Rated APN Leakage",
+        "Recharge Webhook Drop",
+        "Plan Mismatch",
+        "Duplicate Credit",
+        "Unbilled Usage",
+        "Dunning Failure"
+    ]
     leakage_stats_raw = db.query(
         Invoice.anomaly_type,
         func.sum(Invoice.leakage_amount),
@@ -72,7 +94,8 @@ def get_cockpit_summary(
     leakage_dist = []
     for lt in leakage_types:
         stat = leakage_stats.get(lt, {"amount": 0.0, "count": 0})
-        leakage_dist.append({"category": lt, "amount": stat["amount"], "count": stat["count"]})
+        if stat["count"] > 0:
+            leakage_dist.append({"category": lt, "amount": stat["amount"], "count": stat["count"]})
 
     # Module health statuses
     module_statuses = [
@@ -92,6 +115,14 @@ def get_cockpit_summary(
         total_active_customers=active_custs,
         total_at_risk_customers=total_at_risk,
         at_risk_monthly_revenue=at_risk_monthly_rev,
+        overall_arpu=overall_arpu,
+        total_monthly_revenue=round(total_monthly_revenue, 1),
+        prepaid_subscribers_count=prepaid_count,
+        postpaid_subscribers_count=postpaid_count,
+        prepaid_revenue_30d=round(prepaid_revenue_30d, 1),
+        postpaid_revenue_30d=round(postpaid_revenue_30d, 1),
+        avg_prepaid_arpu=round(avg_prepaid_arpu, 1),
+        avg_postpaid_arpu=round(avg_postpaid_arpu, 1),
         open_degraded_nodes=degraded_node_count,
         customers_impacted_by_degradation=impacted_cust_count,
         total_detected_leakage_inr=leakage_sum,

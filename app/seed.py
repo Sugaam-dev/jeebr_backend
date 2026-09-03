@@ -96,58 +96,144 @@ def seed_database():
             "Trident Maritime Corp", "Elevate E-Commerce", "Sahara Hospitality Pvt Ltd", "Prime Capital Advisory"
         ]
 
-        plans_retail = [
-            ("Fiber Starter 100Mbps", 699.0, 500.0),
-            ("Fiber Turbo 200Mbps", 849.0, 750.0),
-            ("Fiber Ultra 300Mbps", 999.0, 1000.0),
-            ("Fiber Giga 500Mbps", 1499.0, 1500.0),
-            ("Fiber Max 1Gbps", 2499.0, 3000.0),
+        prepaid_plans = [
+            # plan_name, plan_price, validity_days, daily_quota_gb, actual_arpu, segment
+            ("Hero Unlimited 1.5GB/Day (28d)", 299.0, 28, 1.5, 345.0, "Prepaid - Daily Unlimited"),
+            ("Super 5G 2GB/Day + Hotstar (28d)", 349.0, 28, 2.0, 395.0, "Prepaid - 5G High Speed"),
+            ("Voice & Value 1GB/Day (28d)", 239.0, 28, 1.0, 265.0, "Prepaid - Value Voice"),
+            ("True 5G Unlimited 2GB/Day (56d)", 579.0, 56, 2.0, 335.0, "Prepaid - 5G High Speed"),
+            ("Super Saver 1.5GB/Day (84d)", 719.0, 84, 1.5, 295.0, "Prepaid - Long-term Bundle"),
+            ("Cricket & OTT 2GB/Day + Prime (84d)", 859.0, 84, 2.0, 340.0, "Prepaid - Long-term Bundle"),
+            ("Annual 5G All-Access 2.5GB/Day (365d)", 2999.0, 365, 2.5, 260.0, "Prepaid - Long-term Bundle"),
         ]
-        plans_corp = [
-            ("ILL Enterprise 500Mbps", 12000.0, 10000.0),
-            ("ILL Premium 1Gbps Dedicated", 22000.0, 25000.0),
-            ("ILL Ultra 2Gbps Symmetric", 40000.0, 50000.0),
+
+        postpaid_plans = [
+            # plan_name, plan_price, billing_cycle_days, monthly_quota_gb, actual_arpu, segment
+            ("Postpaid Individual Infinity 75GB", 499.0, 30, 75.0, 535.0, "Postpaid - Individual Infinity"),
+            ("Postpaid Family Plus (3 SIMs) 150GB", 999.0, 30, 150.0, 1180.0, "Postpaid - Family Plus"),
+            ("Postpaid Enterprise Corporate ILL 500M", 12000.0, 30, 1000.0, 12000.0, "Postpaid - Enterprise ILL"),
+            ("Postpaid Premium Dedicated 1Gbps", 22000.0, 30, 2500.0, 22000.0, "Postpaid - Enterprise ILL"),
         ]
 
         customers = []
         node_map = {n.area: n for n in nodes}
 
-        # Create 1000 customers
+        # Create 1000 customers: 700 Prepaid (70%), 300 Postpaid (30%)
         for i in range(1, 1001):
-            is_corp = (i % 18 == 0)
+            is_prepaid = (i <= 700)
             area = random.choice([n.area for n in nodes])
             node = node_map[area]
             is_node_degraded = (node.status in ['Degraded', 'Critical'])
 
-            if is_corp:
-                c_name = random.choice(corp_names) + f" #{i%100}"
-                c_email = f"billing.mumbai@{c_name.split()[0].lower()}corp.in"
-                segment = "ILL-Corporate"
-                plan, arpu, quota = random.choice(plans_corp)
-            else:
+            # Seed specific reference customers for customer-level ARPU verification
+            if i == 1:
+                c_name = "Myra Pawar"
+                c_email = "myra.pawar@gmail.com"
+                plan = "Annual 5G All-Access 2.5GB/Day (365d)"
+                plan_price = 2999.0
+                validity = 365
+                daily_quota = 2.5
+                revenue_30d = 260.0
+                actual_arpu = 260.0
+                segment = "Prepaid - Long-term Bundle"
+                quota_monthly = daily_quota * 30.0
+                customer_type = "Prepaid"
+                payment_method = "UPI (PhonePe)"
+                booster_spend = 14.0
+            elif i == 2:
+                c_name = "Meera Bansal"
+                c_email = "meera.bansal@gmail.com"
+                plan = "True 5G Unlimited 2GB/Day (56d)"
+                plan_price = 579.0
+                validity = 56
+                daily_quota = 2.0
+                revenue_30d = 335.0
+                actual_arpu = 335.0
+                segment = "Prepaid - 5G High Speed"
+                quota_monthly = daily_quota * 30.0
+                customer_type = "Prepaid"
+                payment_method = "UPI (Google Pay)"
+                booster_spend = 25.0
+            elif i == 3:
+                c_name = "Reyansh Pawar"
+                c_email = "reyansh.pawar@gmail.com"
+                plan = "Super Saver 1.5GB/Day (84d)"
+                plan_price = 719.0
+                validity = 84
+                daily_quota = 1.5
+                revenue_30d = 295.0
+                actual_arpu = 295.0
+                segment = "Prepaid - Long-term Bundle"
+                quota_monthly = daily_quota * 30.0
+                customer_type = "Prepaid"
+                payment_method = "UPI (Paytm)"
+                booster_spend = 38.0
+            elif is_prepaid:
                 fn = random.choice(first_names)
                 ln = random.choice(last_names)
                 c_name = f"{fn} {ln}"
                 c_email = f"{fn.lower()}.{ln.lower()}{i%500}@gmail.com"
-                segment = "Home Broadband"
-                plan, arpu, quota = random.choice(plans_retail)
+                plan, plan_price, validity, daily_quota, _, segment = random.choice(prepaid_plans)
+                quota_monthly = daily_quota * 30.0
+                customer_type = "Prepaid"
+                payment_method = random.choice(["UPI (PhonePe)", "UPI (Google Pay)", "UPI (Paytm)", "MyJio / Airtel Thanks UPI"])
+                # Customer ARPU (30D): Normalized 30-day base pack recognized revenue + booster add-on spend
+                base_30d = round((plan_price / validity) * 30.0, 1)
+                booster_spend = random.choice([0.0, 0.0, 19.0, 29.0, 61.0, 149.0])
+                revenue_30d = round(base_30d + booster_spend, 1)
+                actual_arpu = revenue_30d
+            else:
+                is_corp = (i % 5 == 0)
+                if is_corp:
+                    c_name = random.choice(corp_names) + f" #{i%100}"
+                    c_email = f"billing.mumbai@{c_name.split()[0].lower()}corp.in"
+                    plan, plan_price, validity, quota_monthly, _, segment = random.choice(postpaid_plans[2:])
+                    revenue_30d = plan_price
+                    booster_spend = 0.0
+                else:
+                    fn = random.choice(first_names)
+                    ln = random.choice(last_names)
+                    c_name = f"{fn} {ln}"
+                    c_email = f"{fn.lower()}.{ln.lower()}{i%500}@gmail.com"
+                    plan, plan_price, validity, quota_monthly, _, segment = random.choice(postpaid_plans[:2])
+                    if plan_price == 499.0:
+                        revenue_30d = random.choice([499.0, 535.0, 560.0])
+                    else:
+                        revenue_30d = random.choice([999.0, 1180.0, 1240.0])
+                    booster_spend = round(revenue_30d - plan_price, 1)
+                daily_quota = round(quota_monthly / 30.0, 1)
+                customer_type = "Postpaid"
+                payment_method = random.choice(["Autopay (NACH / e-Mandate)", "Corporate Net Banking", "Credit Card Autopay"])
+                actual_arpu = revenue_30d
 
             tenure = random.randint(1, 48)
             signup_date = datetime.utcnow() - timedelta(days=tenure * 30 + random.randint(1, 28))
 
-            # Correlate churn risk & status with degraded nodes
+            # Correlate churn risk & status with degraded nodes & validity expiry
             if is_node_degraded and random.random() < 0.45:
                 status = "At-Risk"
                 stage = random.choice(["Complaint", "Renewal", "Win-back"])
                 nps = random.randint(2, 5)
+                days_to_expiry = random.randint(-6, 2) if is_prepaid else random.randint(2, 10)
+                validity_status = "Grace Period (Overdue)" if days_to_expiry < 0 else "Expiring Soon"
+                daily_data_used = round(daily_quota * random.uniform(0.95, 1.25), 2)
             elif random.random() < 0.08:
                 status = "At-Risk"
                 stage = "Complaint" if random.random() < 0.5 else "Renewal"
                 nps = random.randint(3, 6)
+                days_to_expiry = random.randint(-5, 2) if is_prepaid else random.randint(2, 12)
+                validity_status = "Grace Period (Overdue)" if days_to_expiry < 0 else "Expiring Soon"
+                daily_data_used = round(daily_quota * random.uniform(0.9, 1.2), 2)
             else:
                 status = "Active"
                 stage = random.choice(["Use", "Use", "Use", "Renewal", "Acquisition", "Install"])
                 nps = random.randint(7, 10)
+                days_to_expiry = random.randint(4, max(5, validity - 3)) if is_prepaid else random.randint(5, 28)
+                validity_status = "Active" if is_prepaid else "Billed Active"
+                daily_data_used = round(daily_quota * random.uniform(0.40, 0.85), 2)
+
+            last_recharge_date = datetime.utcnow() - timedelta(days=max(1, validity - max(0, days_to_expiry)))
+            last_recharge_amount = plan_price
 
             c = Customer(
                 customer_code=f"JBR-MUM-{10000+i}",
@@ -156,8 +242,20 @@ def seed_database():
                 phone=f"+91 98{random.randint(10000000, 99999999)}",
                 locality=area,
                 segment=segment,
+                customer_type=customer_type,
                 plan_name=plan,
-                arpu=arpu,
+                plan_price=plan_price,
+                revenue_30d=revenue_30d,
+                actual_arpu=actual_arpu,
+                arpu=actual_arpu,
+                recharge_validity_days=validity,
+                days_to_expiry=days_to_expiry,
+                validity_status=validity_status,
+                daily_data_quota_gb=daily_quota,
+                daily_data_used_gb=daily_data_used,
+                last_recharge_date=last_recharge_date,
+                last_recharge_amount=last_recharge_amount,
+                payment_method=payment_method,
                 tenure_months=tenure,
                 signup_date=signup_date,
                 status=status,
@@ -167,7 +265,7 @@ def seed_database():
                 created_at=signup_date
             )
             db.add(c)
-            customers.append((c, quota, is_node_degraded))
+            customers.append((c, quota_monthly, is_node_degraded, booster_spend))
 
         db.commit()
 
@@ -176,7 +274,7 @@ def seed_database():
         invoices = []
         recs_to_create = []
 
-        for idx, (cust, quota, is_degraded) in enumerate(customers, 1):
+        for idx, (cust, quota, is_degraded, booster_spend) in enumerate(customers, 1):
             # Usage
             if cust.status == 'At-Risk' or is_degraded:
                 usage_trend = random.choice(['Declining', 'Declining', 'Stable'])
@@ -204,17 +302,20 @@ def seed_database():
             if random.random() < ticket_prob:
                 num_tickets = random.randint(2, 4) if is_degraded else 1
                 for t_i in range(num_tickets):
-                    cat = random.choice(['Outage', 'Speed']) if is_degraded else random.choice(['Speed', 'Billing', 'Hardware', 'Install'])
+                    if cust.customer_type == 'Prepaid':
+                        cat = random.choice(['Outage', 'Speed']) if is_degraded else random.choice(['Speed', 'Validity', 'Billing', 'Hardware'])
+                    else:
+                        cat = random.choice(['Outage', 'Speed']) if is_degraded else random.choice(['Speed', 'Billing', 'Hardware', 'Install'])
                     t_status = random.choice(['Open', 'In-Progress']) if t_i == 0 else 'Resolved'
                     repeat = (num_tickets > 1 and t_i > 0)
-                    desc = f"Subscriber in {cust.locality} reports {cat.lower()} degradation. Packet drops observed on port."
+                    desc = f"Subscriber in {cust.locality} ({cust.customer_type}) reports {cat.lower()} degradation. Packet drops observed on port."
                     
                     t = Ticket(
                         ticket_code=f"TCK-{20260000 + len(tickets) + 1}",
                         customer_id=cust.id,
                         node_id=cust.node_id,
                         category=cat,
-                        priority="Critical" if (cust.segment == 'ILL-Corporate' or repeat) else "High" if is_degraded else "Medium",
+                        priority="Critical" if (cust.segment.startswith('Postpaid - Enterprise') or repeat) else "High" if is_degraded else "Medium",
                         status=t_status,
                         created_at=datetime.utcnow() - timedelta(days=random.randint(1, 14), hours=random.randint(1, 23)),
                         resolved_at=datetime.utcnow() - timedelta(hours=random.randint(2, 24)) if t_status == 'Resolved' else None,
@@ -226,57 +327,107 @@ def seed_database():
                     db.add(t)
                     tickets.append(t)
 
-            # Invoices
-            # Generate intentional billing anomalies for ~40 customers
-            has_anomaly = (idx <= 45)
+            # Invoices / Recharge records
+            # Intentional anomalies for Revenue Assurance:
+            # First 25 customers: Prepaid revenue leakages
+            # Customers 701-725: Postpaid revenue leakages
+            is_prepaid_anomaly = (idx <= 25)
+            is_postpaid_anomaly = (701 <= idx <= 725)
+            has_anomaly = is_prepaid_anomaly or is_postpaid_anomaly
+
             anomaly_type = None
             leakage_amt = 0.0
-            billed_amt = cust.arpu
-            expected_amt = cust.arpu
+            billed_amt = cust.plan_price
+            expected_amt = cust.plan_price
             waiver = 0.0
             inv_status = 'Paid'
 
-            if has_anomaly:
+            if is_prepaid_anomaly:
+                a_choice = idx % 3
+                if a_choice == 0:
+                    anomaly_type = 'Expired Validity OTT Leakage'
+                    billed_amt = 0.0
+                    expected_amt = 299.0
+                    leakage_amt = 299.0  # Premium OTT streaming unbilled past pack expiry
+                elif a_choice == 1:
+                    anomaly_type = 'Zero-Rated APN Leakage'
+                    billed_amt = 0.0
+                    expected_amt = 450.0
+                    leakage_amt = 450.0  # Streaming data routed via zero-rated portal APN
+                else:
+                    anomaly_type = 'Recharge Webhook Drop'
+                    billed_amt = 719.0
+                    expected_amt = 1438.0
+                    leakage_amt = 719.0  # Bank debited, gateway webhook dropped, double credit
+            elif is_postpaid_anomaly:
                 a_choice = idx % 4
                 if a_choice == 0:
                     anomaly_type = 'Plan Mismatch'
-                    billed_amt = 699.0
-                    expected_amt = 1499.0
-                    leakage_amt = 800.0  # ₹800/mo unbilled differential
+                    billed_amt = 499.0
+                    expected_amt = 999.0
+                    leakage_amt = 500.0
                 elif a_choice == 1:
                     anomaly_type = 'Duplicate Credit'
                     waiver = 400.0
-                    leakage_amt = 400.0  # ₹400 duplicate downtime waiver
+                    leakage_amt = 400.0
                 elif a_choice == 2:
                     anomaly_type = 'Unbilled Usage'
-                    expected_amt = cust.arpu + 500.0
-                    leakage_amt = 500.0  # Turbo boost active without line item
+                    expected_amt = cust.plan_price + 500.0
+                    leakage_amt = 500.0
                 else:
                     anomaly_type = 'Dunning Failure'
                     inv_status = 'Unpaid'
-                    leakage_amt = cust.arpu  # Uncollected overdue balance > 45d
-            elif cust.status == 'At-Risk' and random.random() < 0.4:
+                    leakage_amt = cust.plan_price
+            elif cust.status == 'At-Risk' and cust.customer_type == 'Postpaid' and random.random() < 0.4:
                 inv_status = 'Late'
 
+            tx_code_prefix = "RCG" if cust.customer_type == 'Prepaid' else "INV"
+            tx_type = "Base Unlimited Pack Recharge" if cust.customer_type == 'Prepaid' else "Monthly Postpaid Bill"
+
             inv = Invoice(
-                invoice_code=f"INV-2026-{100000 + idx}",
+                invoice_code=f"{tx_code_prefix}-2026-{100000 + idx}",
                 customer_id=cust.id,
                 plan_name=cust.plan_name,
+                transaction_type=tx_type,
+                payment_method=cust.payment_method,
                 billed_amount=billed_amt,
                 expected_amount=expected_amt,
                 due_date=datetime.utcnow() - timedelta(days=random.randint(5, 35)),
                 paid_date=datetime.utcnow() - timedelta(days=random.randint(1, 10)) if inv_status == 'Paid' else None,
                 status=inv_status,
                 waiver_amount=waiver,
-                waiver_reason="Downtime SLA adjustment (AI flagged)" if waiver > 0 else None,
-                renewal_date=datetime.utcnow() + timedelta(days=random.randint(10, 90)),
+                waiver_reason="SLA adjustment" if waiver > 0 else None,
+                renewal_date=datetime.utcnow() + timedelta(days=max(1, cust.days_to_expiry)),
                 anomaly_flag=has_anomaly,
                 anomaly_type=anomaly_type,
                 leakage_amount=leakage_amt,
-                created_at=datetime.utcnow() - timedelta(days=30)
+                created_at=datetime.utcnow() - timedelta(days=25)
             )
             db.add(inv)
             invoices.append(inv)
+
+            # If prepaid customer has booster spend, add the corresponding recent booster recharge invoice
+            if cust.customer_type == 'Prepaid' and booster_spend > 0:
+                booster_amt = booster_spend
+                booster_name = "6GB 5G High-Speed Booster" if booster_amt >= 60.0 else "2GB Daily Top-up" if booster_amt <= 30.0 else "OTT Entertainment Add-on"
+                b_inv = Invoice(
+                    invoice_code=f"RCG-2026-B{100000 + idx}",
+                    customer_id=cust.id,
+                    plan_name=booster_name,
+                    transaction_type="Data Booster Add-on",
+                    payment_method=cust.payment_method,
+                    billed_amount=booster_amt,
+                    expected_amount=booster_amt,
+                    due_date=datetime.utcnow() - timedelta(days=random.randint(2, 15)),
+                    paid_date=datetime.utcnow() - timedelta(days=random.randint(2, 15)),
+                    status="Paid",
+                    waiver_amount=0.0,
+                    renewal_date=datetime.utcnow() + timedelta(days=max(1, cust.days_to_expiry)),
+                    anomaly_flag=False,
+                    created_at=datetime.utcnow() - timedelta(days=random.randint(2, 15))
+                )
+                db.add(b_inv)
+                invoices.append(b_inv)
 
         db.commit()
 
@@ -312,52 +463,57 @@ def seed_database():
         )
         db.add(r1)
 
-        # Recommendation 2: Churn Retention (Pending)
-        at_risk_c = next(c for c, _, _ in customers if c.status == 'At-Risk')
+        # Recommendation 2: Churn Retention (Pending) - Focused on Prepaid Subscriber
+        at_risk_c = next(c for c, *_ in customers if c.status == 'At-Risk' and c.customer_type == 'Prepaid')
         r2 = Recommendation(
             source_module="Churn Prediction & Retention AI",
             target_entity_type="Customer",
             target_entity_id=at_risk_c.id,
             target_entity_label=f"{at_risk_c.name} ({at_risk_c.customer_code})",
-            title=f"VIP Retention Outreach - {at_risk_c.name}",
-            description=f"Subscriber churn risk scored at 88.5% due to 3 recent outage complaints + 42% bandwidth drop. Proposing Speed Boost & 20% billing discount.",
-            recommended_action="Apply 20% Retention Credit Voucher + Schedule Priority Account Manager Satisfaction Call.",
-            confidence_score=0.93,
+            title=f"Prepaid Retention Save Offer - {at_risk_c.name}",
+            description=f"Prepaid subscriber scored at 88.5% churn risk. Validity expired {abs(at_risk_c.days_to_expiry)} days ago + daily 1.5GB quota exhausted early + 2 repeat buffering complaints. Recommending 3-day validity extension + emergency 5G booster.",
+            recommended_action="Apply 3-Day Validity Extension + 5GB 5G High-Speed Booster Voucher & 20% UPI Renewal Concession.",
+            confidence_score=0.94,
             status="PENDING",
             action_payload={
                 "customer_code": at_risk_c.customer_code,
+                "customer_type": at_risk_c.customer_type,
+                "plan_price": at_risk_c.plan_price,
+                "actual_arpu": at_risk_c.actual_arpu,
                 "arpu": at_risk_c.arpu,
                 "locality": at_risk_c.locality,
                 "signals": [
-                    {"factor": "Complaint Recency", "weight": "+30 pts", "detail": "3 open complaints in 7 days"},
-                    {"factor": "Bandwidth Drop", "weight": "+28 pts", "detail": "Monthly consumption dropped 42%"}
+                    {"factor": "Recharge Lag / Validity Expired", "weight": "+35 pts", "detail": f"Validity expired {abs(at_risk_c.days_to_expiry)} days ago; pending renewal"},
+                    {"factor": "Daily Quota Exhaustion", "weight": "+25 pts", "detail": "Exhausted 100% of daily 1.5GB cap by 2 PM on 14 of last 20 days"},
+                    {"factor": "Buffering Complaints", "weight": "+22 pts", "detail": "2 tickets logged regarding video buffering during prime time"}
                 ]
             },
             created_at=datetime.utcnow() - timedelta(hours=3)
         )
         db.add(r2)
 
-        # Recommendation 3: Intelligent Customer Journeys (Pending)
-        complaint_c = next(c for c, _, _ in customers if c.current_stage == 'Complaint')
+        # Recommendation 3: Intelligent Customer Journeys (Pending) - Focused on Prepaid Renewal NBA
+        renewal_c = next(c for c, *_ in customers if c.current_stage == 'Renewal' and c.customer_type == 'Prepaid')
         r3 = Recommendation(
             source_module="Intelligent Customer Journeys",
             target_entity_type="Customer",
-            target_entity_id=complaint_c.id,
-            target_entity_label=f"{complaint_c.name} ({complaint_c.customer_code})",
-            title=f"Next-Best-Action - Stage: Complaint ({complaint_c.name})",
-            description=f"Subscriber in Complaint lifecycle stage with active fiber ticket. Recommended proactive SLA waiver and VIP technician escalation.",
-            recommended_action=f"Proactive SLA Credit Guarantee (INR 250) + Priority VIP Technician Escalation via Direct Phone Call.",
-            confidence_score=0.95,
+            target_entity_id=renewal_c.id,
+            target_entity_label=f"{renewal_c.name} ({renewal_c.customer_code})",
+            title=f"Next-Best-Action - Stage: Renewal ({renewal_c.name})",
+            description=f"Prepaid {renewal_c.plan_name} pack expiring in {renewal_c.days_to_expiry} days. AI recommended automated 1-click WhatsApp UPI recharge link with 5GB bonus voucher.",
+            recommended_action=f"Deliver 1-Click WhatsApp UPI Recharge Link with 5GB Bonus Voucher ({renewal_c.plan_name}).",
+            confidence_score=0.93,
             status="PENDING",
             action_payload={
-                "customer_code": complaint_c.customer_code,
-                "stage": "Complaint",
-                "locality": complaint_c.locality,
-                "channel": "Direct Phone Call by Care Lead",
+                "customer_code": renewal_c.customer_code,
+                "customer_type": renewal_c.customer_type,
+                "stage": "Renewal",
+                "locality": renewal_c.locality,
+                "channel": "WhatsApp Interactive Message",
                 "signals": [
-                    {"signal": "Lifecycle Stage", "value": "Complaint", "weight": "+35 pts"},
-                    {"signal": "NPS Sentiment", "value": f"{complaint_c.nps_score}/10 NPS", "weight": "+25 pts"},
-                    {"signal": "Active Tickets", "value": "Fiber attenuation complaint", "weight": "+30 pts"}
+                    {"signal": "Pack Expiry Countdown", "value": f"Expires in {renewal_c.days_to_expiry} days", "weight": "+35 pts"},
+                    {"signal": "Recharge Channel", "value": "UPI PhonePe", "weight": "+25 pts"},
+                    {"signal": "NPS Sentiment", "value": f"{renewal_c.nps_score}/10 NPS", "weight": "+20 pts"}
                 ]
             },
             created_at=datetime.utcnow() - timedelta(hours=3, minutes=30)
@@ -372,7 +528,7 @@ def seed_database():
             target_entity_id=open_ticket.id,
             target_entity_label=f"Ticket {open_ticket.ticket_code} ({open_ticket.category})",
             title=f"Automated Profile Re-provisioning - {open_ticket.ticket_code}",
-            description=f"AI diagnosed ONT sync loss and packet drops on BRAS cluster. Recommending remote TR-069 QoS bandwidth sync.",
+            description=f"AI diagnosed BRAS profile desync and packet loss. Recommending remote TR-069 QoS bandwidth sync.",
             recommended_action="Execute remote ONT reset and BRAS QoS bandwidth profile re-synchronization.",
             confidence_score=0.94,
             status="PENDING",
@@ -390,23 +546,23 @@ def seed_database():
         )
         db.add(r4)
 
-        # Recommendation 5: Revenue Assurance (Pending)
-        anomaly_inv = next(inv for inv in invoices if inv.anomaly_flag and inv.anomaly_type == 'Plan Mismatch')
+        # Recommendation 5: Revenue Assurance (Pending) - Prepaid OTT Policy Leakage
+        anomaly_inv = next(inv for inv in invoices if inv.anomaly_flag and inv.anomaly_type == 'Expired Validity OTT Leakage')
         r5 = Recommendation(
             source_module="Revenue Assurance & Leakage Analytics",
             target_entity_type="Invoice",
             target_entity_id=anomaly_inv.id,
-            target_entity_label=f"Invoice {anomaly_inv.invoice_code} (Plan Mismatch)",
-            title=f"Billing Rate Adjustment - INR {anomaly_inv.leakage_amount:.0f} Leakage",
-            description=f"Subscriber on 500 Mbps plan billed starter tier rate of INR {anomaly_inv.billed_amount:.0f}. Estimated revenue leakage INR {anomaly_inv.leakage_amount:.0f}/mo.",
-            recommended_action=f"Issue supplemental invoice for INR {anomaly_inv.leakage_amount:.0f} and align billing catalog in SAP BRIM.",
+            target_entity_label=f"Transaction {anomaly_inv.invoice_code} (Expired Validity OTT Leakage)",
+            title=f"Prepaid Policy Re-sync - INR {anomaly_inv.leakage_amount:.0f} OTT Leakage",
+            description=f"Subscriber actively streaming premium OTT content 6 days after pack validity expired due to PCRF policy push lag. Estimated unbilled leakage INR {anomaly_inv.leakage_amount:.0f}.",
+            recommended_action=f"Execute PCRF policy revocation to terminate zero-balance OTT tunnel and deliver automated 1-click WhatsApp renewal prompt.",
             confidence_score=0.98,
             status="PENDING",
             action_payload={
                 "invoice_code": anomaly_inv.invoice_code,
                 "leakage_amount": anomaly_inv.leakage_amount,
                 "anomaly_type": anomaly_inv.anomaly_type,
-                "signals": [{"anomaly": "Catalog Plan Rate Mismatch", "leakage": anomaly_inv.leakage_amount}]
+                "signals": [{"anomaly": "Expired Validity OTT Tunnel Active", "leakage": anomaly_inv.leakage_amount}]
             },
             created_at=datetime.utcnow() - timedelta(hours=5)
         )

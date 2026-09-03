@@ -52,9 +52,21 @@ class Customer(Base):
     email = Column(String(150), nullable=False)
     phone = Column(String(50), nullable=False)
     locality = Column(String(100), index=True, nullable=False)
-    segment = Column(String(50), index=True, nullable=False)  # Home Broadband, ILL-Corporate, SME
+    segment = Column(String(50), index=True, nullable=False)  # Prepaid - Daily Unlimited, Long-term Bundle, Postpaid Family, etc.
+    customer_type = Column(String(50), index=True, default='Prepaid')  # Prepaid, Postpaid
     plan_name = Column(String(100), nullable=False)
-    arpu = Column(Float, nullable=False)  # Monthly billing in INR (₹)
+    plan_price = Column(Float, nullable=False, default=299.0)  # Nominal pack/plan price in INR (₹)
+    revenue_30d = Column(Float, nullable=False, default=295.0)  # Actual customer-level revenue generated over the last 30 days
+    actual_arpu = Column(Float, nullable=False, default=295.0)  # Synchronized with revenue_30d
+    arpu = Column(Float, nullable=False)  # Synchronized with revenue_30d for backwards compatibility
+    recharge_validity_days = Column(Integer, default=28)
+    days_to_expiry = Column(Integer, default=14)
+    validity_status = Column(String(50), default='Active')  # Active, Expiring Soon, Grace Period, Expired
+    daily_data_quota_gb = Column(Float, default=1.5)
+    daily_data_used_gb = Column(Float, default=0.8)
+    last_recharge_date = Column(DateTime, nullable=True)
+    last_recharge_amount = Column(Float, nullable=True)
+    payment_method = Column(String(50), default='UPI')
     tenure_months = Column(Integer, default=1)
     signup_date = Column(DateTime, nullable=False)
     status = Column(String(50), index=True, default='Active')  # Active, At-Risk, Churned
@@ -114,6 +126,8 @@ class Invoice(Base):
     invoice_code = Column(String(50), unique=True, index=True, nullable=False)
     customer_id = Column(Integer, ForeignKey('customers.id'), nullable=False)
     plan_name = Column(String(100), nullable=False)
+    transaction_type = Column(String(50), default='Recharge')  # Recharge Pack, Data Booster, OTT Add-on, Postpaid Bill
+    payment_method = Column(String(50), default='UPI')  # UPI (PhonePe/GPay), Net Banking, Card, Autopay
     billed_amount = Column(Float, nullable=False)
     expected_amount = Column(Float, nullable=False)
     due_date = Column(DateTime, nullable=False)

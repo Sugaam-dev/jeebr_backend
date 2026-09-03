@@ -50,6 +50,45 @@ def evaluate_invoice_signals(inv: Invoice) -> Tuple[float, str, float, List[Cont
             desc = f"Active high-speed port boost without recurring subscription charge."
             action = f"Attach recurring add-on subscription item of ₹{inv.leakage_amount:.0f}/mo to customer billing profile."
 
+    if inv.anomaly_type == 'Expired Validity OTT Leakage':
+        score += 38.0
+        factors.append(ContributingSignal(
+            signal="Unbilled OTT Stream on Expired Pack",
+            value=f"₹{inv.leakage_amount:.0f} unbilled usage",
+            weight="+38 pts",
+            detail="PCRF policy cache lag allowed subscriber to stream premium OTT video 6 days after pack validity expired.",
+            impact_type="negative"
+        ))
+        if not desc:
+            desc = f"Subscriber consuming OTT streaming content past pack validity expiry due to PCRF policy synchronization delay."
+            action = f"Trigger PCRF policy revocation to terminate zero-balance OTT tunnel and deliver automated 1-click WhatsApp renewal prompt."
+
+    if inv.anomaly_type == 'Zero-Rated APN Leakage':
+        score += 36.0
+        factors.append(ContributingSignal(
+            signal="Zero-Rated APN Classification Bypass",
+            value=f"₹{inv.leakage_amount:.0f} packet leakage",
+            weight="+36 pts",
+            detail="Commercial streaming data routed via subsidized educational zero-rated APN due to GGSN classification rule defect.",
+            impact_type="negative"
+        ))
+        if not desc:
+            desc = f"Commercial high-bandwidth video packets routed through zero-rated portal APN without rating meter deduction."
+            action = f"Push updated DPI packet inspection signatures to PGW/GGSN cluster to enforce correct APN tariff metering."
+
+    if inv.anomaly_type == 'Recharge Webhook Drop':
+        score += 34.0
+        factors.append(ContributingSignal(
+            signal="Payment Gateway Webhook Timeout",
+            value=f"₹{inv.leakage_amount:.0f} ledger differential",
+            weight="+34 pts",
+            detail="NPCI UPI debited successfully but gateway webhook timeout triggered automated retry double-crediting pack validity.",
+            impact_type="negative"
+        ))
+        if not desc:
+            desc = f"UPI payment retry conflict resulted in dual validity allocation in customer prepaid balance ledger."
+            action = f"Reconcile NPCI UPI settlement ledger in SAP BRIM and adjust duplicate wallet credit."
+
     if inv.status == 'Unpaid' or inv.anomaly_type == 'Dunning Failure':
         score += 35.0
         factors.append(ContributingSignal(

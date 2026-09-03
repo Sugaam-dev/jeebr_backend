@@ -114,6 +114,8 @@ class TicketSummary(BaseModel):
 class InvoiceSummary(BaseModel):
     id: int
     invoice_code: str
+    transaction_type: Optional[str] = "Recharge"
+    payment_method: Optional[str] = "UPI"
     billed_amount: float
     due_date: datetime
     paid_date: Optional[datetime]
@@ -130,8 +132,20 @@ class CustomerListResponse(BaseModel):
     phone: str
     locality: str
     segment: str
+    customer_type: str = "Prepaid"  # Prepaid (~70%), Postpaid (~30%)
     plan_name: str
-    arpu: float
+    plan_price: float  # Nominal pack price or monthly rental
+    revenue_30d: float = 295.0  # Actual customer-level revenue generated over the last 30 days
+    actual_arpu: float  # Synchronized with revenue_30d
+    arpu: float  # Synchronized with revenue_30d
+    recharge_validity_days: Optional[int] = 28
+    days_to_expiry: Optional[int] = 14
+    validity_status: Optional[str] = "Active"
+    daily_data_quota_gb: Optional[float] = 1.5
+    daily_data_used_gb: Optional[float] = 0.8
+    last_recharge_date: Optional[datetime] = None
+    last_recharge_amount: Optional[float] = None
+    payment_method: Optional[str] = "UPI"
     tenure_months: int
     status: str
     current_stage: str
@@ -148,8 +162,15 @@ class ChurnCustomerPrediction(BaseModel):
     name: str
     locality: str
     segment: str
+    customer_type: str = "Prepaid"
     plan_name: str
+    plan_price: float = 299.0
+    revenue_30d: float = 295.0
+    actual_arpu: float = 295.0
     arpu: float
+    recharge_validity_days: Optional[int] = 28
+    days_to_expiry: Optional[int] = 14
+    validity_status: Optional[str] = "Active"
     tenure_months: int
     churn_risk_score: float  # 0 to 100
     risk_level: str  # Critical, High, Medium, Low
@@ -184,7 +205,11 @@ class JourneyCustomerItem(BaseModel):
     name: str
     locality: str
     segment: str
+    customer_type: str = "Prepaid"
     plan_name: str
+    plan_price: float = 299.0
+    revenue_30d: float = 295.0
+    actual_arpu: float = 295.0
     current_stage: str
     tenure_months: int
     nps_score: int
@@ -320,6 +345,14 @@ class CockpitKPISummary(BaseModel):
     total_active_customers: int
     total_at_risk_customers: int
     at_risk_monthly_revenue: float
+    overall_arpu: float = 512.0  # Aggregate ARPU = Total 30D Revenue / Total Active Subscribers
+    total_monthly_revenue: float = 512000.0  # Total recognized 30-day revenue across active subscriber base
+    prepaid_subscribers_count: int = 700
+    postpaid_subscribers_count: int = 300
+    prepaid_revenue_30d: float = 206000.0
+    postpaid_revenue_30d: float = 306000.0
+    avg_prepaid_arpu: float = 295.0
+    avg_postpaid_arpu: float = 1020.0
     open_degraded_nodes: int
     customers_impacted_by_degradation: int
     total_detected_leakage_inr: float
