@@ -1,7 +1,7 @@
 from datetime import datetime
 from typing import Optional, Dict, Any
 from sqlalchemy.orm import Session
-from app.models import Recommendation, AuditLog, User, Ticket, Customer, Node, Invoice
+from app.models import Recommendation, AuditLog, User, Ticket, Customer, Node, Invoice, Resource
 
 def create_or_get_recommendation(
     db: Session,
@@ -101,6 +101,14 @@ def reject_recommendation(
     rec.reviewed_at = datetime.utcnow()
     rec.review_notes = notes or f"Rejected by {user.full_name} ({user.role})"
 
+    # Sync with Ticket if recommendation was for Ticket dispatch
+    if rec.target_entity_type == 'Ticket':
+        t = db.query(Ticket).filter(Ticket.id == rec.target_entity_id).first()
+        if t and t.approval_status == 'PENDING_APPROVAL':
+            t.approval_status = 'REJECTED'
+            t.status = 'Rejected'
+            t.approval_notes = f"Rejected via SentinelOS Governance Board (#{rec.id}): {notes or ''}"
+
     # Create Audit Log
     audit = AuditLog(
         market_id=rec.market_id or 'mumbai',
@@ -138,17 +146,50 @@ def simulate_execution(db: Session, rec: Recommendation) -> Dict[str, Any]:
             "telemetry_calibration": "OTDR line trace initiated; optical attenuation restored to -21.4 dBm"
         }
 
-    elif rec.source_module == 'AI-driven OSS/BSS Orchestration' or rec.target_entity_type == 'Ticket':
+    elif rec.source_module in ['Automatic Ticketing & Regional Dispatch', 'AI-driven OSS/BSS Orchestration'] or rec.target_entity_type == 'Ticket':
         ticket = db.query(Ticket).filter(Ticket.id == rec.target_entity_id).first()
         if ticket:
-            ticket.status = 'Resolved'
-            ticket.resolved_at = datetime.utcnow()
-            db.commit()
-        return {
-            "action": f"Automated workflow #{ticket.ticket_code if ticket else 'TCK-1'} executed via TR-069 / OSS orchestrator",
-            "status": "Resolved",
-            "orchestration_time": "3.8 seconds"
-        }
+            if ticket.approval_status == 'PENDING_APPROVAL':
+                # This is a Ticket Dispatch Approval from Governance!
+                from app.services.ticketing_engine import find_best_regional_resource, find_best_internal_resource
+                ticket.approval_status = 'APPROVED'
+                ticket.approved_at = datetime.utcnow()
+                ticket.approval_notes = f"Approved via SentinelOS Governance Board (#{rec.id})"
+                if ticket.source == "INTERNAL":
+                    assigned_res = find_best_internal_resource(db, ticket.market_id)
+                else:
+                    assigned_res = find_best_regional_resource(db, ticket.market_id, ticket.region)
+                if assigned_res:
+                    ticket.assigned_resource_id = assigned_res.id
+                    ticket.assigned_at = datetime.utcnow()
+                    ticket.status = "Assigned"
+                    assigned_res.active_tickets_count += 1
+                    ticket.ai_triage_action = f"Approved via Governance Board & auto-dispatched to {assigned_res.name} ({assigned_res.region})"
+                else:
+                    ticket.status = "Approved"
+                db.commit()
+                return {
+                    "action": f"Approved field dispatch for Ticket #{ticket.ticket_code} — assigned to {assigned_res.name if assigned_res else 'regional field team'}",
+                    "status": "Assigned",
+                    "assigned_resource": assigned_res.name if assigned_res else None,
+                    "region": ticket.region
+                }
+            else:
+                # Orchestration resolution workflow
+                ticket.status = 'Resolved'
+                ticket.resolved_at = datetime.utcnow()
+                if ticket.assigned_resource_id:
+                    res = db.query(Resource).filter(Resource.id == ticket.assigned_resource_id).first()
+                    if res and res.active_tickets_count > 0:
+                        res.active_tickets_count -= 1
+                        if res.active_tickets_count < res.max_capacity and res.status == 'Busy':
+                            res.status = 'Available'
+                db.commit()
+                return {
+                    "action": f"Automated workflow #{ticket.ticket_code if ticket else 'TCK-1'} executed via TR-069 / OSS orchestrator",
+                    "status": "Resolved",
+                    "orchestration_time": "3.8 seconds"
+                }
 
     elif rec.source_module == 'Revenue Assurance & Leakage Analytics' or rec.target_entity_type == 'Invoice':
         invoice = db.query(Invoice).filter(Invoice.id == rec.target_entity_id).first()

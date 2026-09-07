@@ -3,12 +3,50 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.config import settings
 from app.database import engine, Base
 from app.routers import (
-    auth, customers, assurance, churn, journeys, orchestration, revenue, governance, cockpit, pilot_bundle
+    auth, customers, assurance, churn, journeys, orchestration, revenue, governance, cockpit, pilot_bundle, ticketing
 )
 from app import markets
 
 # Create database tables
 Base.metadata.create_all(bind=engine)
+
+def ensure_ticket_columns():
+    """Ensure newly added ticketing columns and call logs exist in the database without breaking existing tables."""
+    from sqlalchemy import text
+    try:
+        # Re-run create_all for newly added models like approval_call_logs
+        Base.metadata.create_all(bind=engine)
+        with engine.connect() as conn:
+            columns_to_add = [
+                ("source", "VARCHAR(50) DEFAULT 'CUSTOMER'"),
+                ("region", "VARCHAR(100)"),
+                ("assigned_resource_id", "INTEGER REFERENCES resources(id)"),
+                ("assigned_at", "TIMESTAMP"),
+                ("approval_status", "VARCHAR(50) DEFAULT 'NOT_REQUIRED'"),
+                ("approved_by_id", "INTEGER REFERENCES users(id)"),
+                ("approved_at", "TIMESTAMP"),
+                ("approval_notes", "TEXT"),
+            ]
+            for col, col_def in columns_to_add:
+                try:
+                    conn.execute(text(f"ALTER TABLE tickets ADD COLUMN IF NOT EXISTS {col} {col_def};"))
+                    conn.commit()
+                except Exception:
+                    pass
+            try:
+                conn.execute(text("ALTER TABLE users ADD COLUMN IF NOT EXISTS phone VARCHAR(50) DEFAULT '+91 98200 12345';"))
+                conn.commit()
+            except Exception:
+                pass
+            try:
+                conn.execute(text("ALTER TABLE tickets ALTER COLUMN customer_id DROP NOT NULL;"))
+                conn.commit()
+            except Exception:
+                pass
+    except Exception:
+        pass
+
+ensure_ticket_columns()
 
 app = FastAPI(
     title=settings.PROJECT_NAME,
@@ -45,6 +83,7 @@ app.include_router(orchestration.router, prefix=settings.API_V1_STR)
 app.include_router(revenue.router, prefix=settings.API_V1_STR)
 app.include_router(governance.router, prefix=settings.API_V1_STR)
 app.include_router(pilot_bundle.router, prefix=settings.API_V1_STR)
+app.include_router(ticketing.router, prefix=settings.API_V1_STR)
 
 @app.get("/")
 def root():

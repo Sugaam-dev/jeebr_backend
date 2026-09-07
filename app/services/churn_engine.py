@@ -13,7 +13,7 @@ def evaluate_customer_signals(
     score = 10.0
     factors: List[ContributingSignal] = []
 
-    recent_tickets = [t for t in tickets if t.status in ['Open', 'In-Progress']]
+    recent_tickets = [t for t in tickets if t.status not in ['Resolved', 'Closed', 'Rejected']]
     repeat_tickets = [t for t in tickets if t.repeat_flag]
     ticket_impact = 0.0
     if len(recent_tickets) > 0:

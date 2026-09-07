@@ -13,6 +13,7 @@ class User(Base):
     hashed_password = Column(String(255), nullable=False)
     full_name = Column(String(255), nullable=False)
     role = Column(String(50), nullable=False)  # Executive, NOC, Care, Revenue, Admin
+    phone = Column(String(50), nullable=True, default='+91 98200 12345')
     is_active = Column(Boolean, default=True)
     created_at = Column(DateTime, default=datetime.utcnow)
 
@@ -101,17 +102,38 @@ class UsageRecord(Base):
     customer = relationship('Customer', back_populates='usage_records')
 
 
+class Resource(Base):
+    __tablename__ = 'resources'
+
+    id = Column(Integer, primary_key=True, index=True)
+    market_id = Column(String(50), default='mumbai', index=True, nullable=False)
+    name = Column(String(150), nullable=False)
+    email = Column(String(150), nullable=True)
+    phone = Column(String(50), nullable=True)
+    resource_type = Column(String(50), default='FIELD', nullable=False)  # FIELD or INTERNAL
+    region = Column(String(100), index=True, nullable=False)  # Locality/Area e.g. Bandra West, or "Internal NOC"
+    status = Column(String(50), default='Available')  # Available, Busy, Offline
+    active_tickets_count = Column(Integer, default=0)
+    max_capacity = Column(Integer, default=5)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    # Relationships
+    tickets = relationship('Ticket', back_populates='assigned_resource')
+
+
 class Ticket(Base):
     __tablename__ = 'tickets'
 
     id = Column(Integer, primary_key=True, index=True)
     market_id = Column(String(50), default='mumbai', index=True, nullable=False)
     ticket_code = Column(String(50), unique=True, index=True, nullable=False)
-    customer_id = Column(Integer, ForeignKey('customers.id'), nullable=False)
+    source = Column(String(50), default='CUSTOMER', nullable=False)  # CUSTOMER or INTERNAL
+    region = Column(String(100), index=True, nullable=True)  # Regional locality
+    customer_id = Column(Integer, ForeignKey('customers.id'), nullable=True)
     node_id = Column(Integer, ForeignKey('nodes.id'), nullable=True)
-    category = Column(String(50), nullable=False)  # Outage, Speed, Billing, Install, Hardware
-    priority = Column(String(50), default='Medium')  # Low, Medium, High, Critical
-    status = Column(String(50), default='Open')  # Open, In-Progress, Resolved, Closed
+    category = Column(String(50), nullable=False)  # Outage, Speed, Billing, Install, Hardware, Core Network
+    priority = Column(String(50), default='P3')  # P1, P2, P3, P4
+    status = Column(String(50), default='Open')  # Open, Pending Approval, Assigned, In-Progress, Resolved, Closed, Rejected
     created_at = Column(DateTime, default=datetime.utcnow)
     resolved_at = Column(DateTime, nullable=True)
     repeat_flag = Column(Boolean, default=False)
@@ -119,8 +141,19 @@ class Ticket(Base):
     ai_triage_action = Column(String(100), nullable=True)
     sla_deadline = Column(DateTime, nullable=True)
 
+    # Assignment & Approval
+    assigned_resource_id = Column(Integer, ForeignKey('resources.id'), nullable=True)
+    assigned_at = Column(DateTime, nullable=True)
+    approval_status = Column(String(50), default='NOT_REQUIRED')  # NOT_REQUIRED, PENDING_APPROVAL, APPROVED, REJECTED
+    approved_by_id = Column(Integer, ForeignKey('users.id'), nullable=True)
+    approved_at = Column(DateTime, nullable=True)
+    approval_notes = Column(Text, nullable=True)
+
     customer = relationship('Customer', back_populates='tickets')
     node = relationship('Node', back_populates='tickets')
+    assigned_resource = relationship('Resource', back_populates='tickets')
+    approved_by = relationship('User', foreign_keys=[approved_by_id])
+    call_logs = relationship('ApprovalCallLog', back_populates='ticket', cascade='all, delete-orphan')
 
 
 class Invoice(Base):
@@ -192,3 +225,22 @@ class AuditLog(Base):
 
     recommendation = relationship('Recommendation', back_populates='audit_logs')
     user = relationship('User', back_populates='audit_logs')
+
+
+class ApprovalCallLog(Base):
+    __tablename__ = 'approval_call_logs'
+
+    id = Column(Integer, primary_key=True, index=True)
+    market_id = Column(String(50), default='mumbai', index=True, nullable=False)
+    ticket_id = Column(Integer, ForeignKey('tickets.id', ondelete='CASCADE'), index=True, nullable=False)
+    recipient_name = Column(String(150), nullable=False)
+    recipient_phone = Column(String(50), nullable=False)
+    recipient_role = Column(String(50), nullable=False)
+    priority = Column(String(10), nullable=False)
+    voice_script = Column(Text, nullable=False)
+    status = Column(String(50), default='DELIVERED')  # INITIATED, RINGING, CONNECTED, DELIVERED, COMPLETED
+    call_sid = Column(String(100), nullable=True)
+    duration_seconds = Column(Integer, default=32)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    ticket = relationship('Ticket', back_populates='call_logs')

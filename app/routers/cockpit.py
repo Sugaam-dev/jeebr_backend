@@ -34,7 +34,7 @@ def get_cockpit_summary(
         Invoice.market_id == market
     ).scalar() or 0.0
     open_tickets = db.query(Ticket).filter(
-        Ticket.status.in_(['Open', 'In-Progress']),
+        Ticket.status.notin_(['Resolved', 'Closed', 'Rejected']),
         Ticket.market_id == market
     ).count()
     pending_recs = db.query(Recommendation).filter(
@@ -128,6 +128,7 @@ def get_cockpit_summary(
         ModuleHealthStatus(module_name="Churn Prediction & Retention AI", status="Active (Real-time)", active_alerts=total_at_risk, confidence_avg=0.91),
         ModuleHealthStatus(module_name="Intelligent Customer Journeys", status="Active (Rule-based)", active_alerts=12, confidence_avg=0.88),
         ModuleHealthStatus(module_name="AI-driven OSS/BSS Orchestration", status="Active (Queue-driven)", active_alerts=open_tickets, confidence_avg=0.94),
+        ModuleHealthStatus(module_name="Automatic Ticketing & Dispatch", status="Active (Auto-assigned)", active_alerts=open_tickets, confidence_avg=0.97),
         ModuleHealthStatus(module_name="Revenue Assurance & Leakage Analytics", status="Active (Audit scan)", active_alerts=len(leakage_dist), confidence_avg=0.96),
         ModuleHealthStatus(module_name="Human-in-the-Loop AI Governance", status="Active (Governed)", active_alerts=pending_recs, confidence_avg=0.99),
     ]

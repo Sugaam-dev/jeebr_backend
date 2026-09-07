@@ -52,7 +52,7 @@ def evaluate_single_customer_journey(
             impact_type="negative" if quota_pct > 85 else "positive" if quota_pct > 40 else "neutral"
         ))
 
-    open_tickets = [t for t in tickets if t.status in ['Open', 'In-Progress']]
+    open_tickets = [t for t in tickets if t.status not in ['Resolved', 'Closed', 'Rejected']]
     if open_tickets:
         signals.append(ContributingSignal(
             signal="Active Tickets",

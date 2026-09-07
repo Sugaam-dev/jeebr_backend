@@ -195,7 +195,9 @@ def get_customer_360(
             status=t.status,
             created_at=t.created_at,
             repeat_flag=t.repeat_flag,
-            description=t.description
+            description=t.description,
+            assigned_resource_name=t.assigned_resource.name if t.assigned_resource else None,
+            region=t.region
         ) for t in tickets
     ]
 

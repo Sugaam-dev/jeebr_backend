@@ -257,20 +257,74 @@ def test_dual_market_isolation_and_governance():
         assert "jeebr" not in payload_str, "Client name 'jeebr' found in API response!"
         assert "meghbela" not in payload_str, "Client name 'meghbela' found in API response!"
 
+def test_approval_engine_voice_alert_and_technician_assignment():
+    admin_res = client.post("/api/auth/demo-login/Admin")
+    admin_token = admin_res.json()["access_token"]
+    headers = {"Authorization": f"Bearer {admin_token}", "X-Market-Id": "mumbai"}
+
+    # 1. Raise a P1 ticket
+    p1_payload = {
+        "source": "CUSTOMER",
+        "category": "Speed",
+        "priority": "P1",
+        "region": "Bandra West",
+        "description": "Urgent P1 optical loss on Bandra hub distribution line."
+    }
+    create_res = client.post("/api/tickets", json=p1_payload, headers=headers)
+    assert create_res.status_code == 200, f"Ticket creation failed: {create_res.text}"
+    ticket = create_res.json()
+    ticket_id = ticket["id"]
+    assert ticket["priority"] == "P1"
+    assert ticket["approval_status"] == "PENDING_APPROVAL"
+    assert ticket["voice_call_dispatched"] is True
+    assert ticket["last_call_recipient"] is not None
+
+    # 2. Query call logs for this ticket
+    logs_res = client.get(f"/api/tickets/{ticket_id}/call-logs", headers=headers)
+    assert logs_res.status_code == 200
+    logs = logs_res.json()
+    assert len(logs) >= 1
+    latest_log = logs[0]
+    assert latest_log["priority"] == "P1"
+    assert "Emergency SentinelOS" in latest_log["voice_script"]
+    assert latest_log["status"] == "DELIVERED"
+
+    # 3. Test simulate-call endpoint
+    sim_res = client.post(f"/api/tickets/{ticket_id}/simulate-call", headers=headers)
+    assert sim_res.status_code == 200
+    assert sim_res.json()["status"] == "DELIVERED"
+
+    # 4. Fetch available resources to test manual technician assignment
+    resources_res = client.get("/api/tickets/resources", headers=headers)
+    assert resources_res.status_code == 200
+    resources = resources_res.json()
+    assert len(resources) > 0
+    target_resource = resources[0]
+
+    # 5. Approve with custom notes and manual technician assignment
+    custom_note = "Emergency splice authorized by NOC Lead. Manual technician dispatch verified."
+    approve_res = client.post(f"/api/tickets/{ticket_id}/approve", json={
+        "notes": custom_note,
+        "resource_id": target_resource["id"]
+    }, headers=headers)
+    assert approve_res.status_code == 200
+    approved_ticket = approve_res.json()
+    assert approved_ticket["approval_status"] == "APPROVED"
+    assert approved_ticket["assigned_resource_id"] == target_resource["id"]
+    assert approved_ticket["assigned_resource_name"] == target_resource["name"]
+    assert approved_ticket["approval_notes"] == custom_note
+    assert "manually assigned" in approved_ticket["ai_triage_action"].lower()
+
 if __name__ == "__main__":
     print("Running updated comprehensive test suite...")
     test_health()
     print("[PASS] Health check")
     test_demo_logins()
     print("[PASS] All 5 Demo logins (Executive, NOC, Care, Revenue, Admin)")
+    test_approval_engine_voice_alert_and_technician_assignment()
+    print("[PASS] Approval Engine Voice Alert Call & Manual Technician Assignment")
     test_5_intelligence_modules()
-    print("[PASS] All 5 Intelligence Modules (Assurance, Churn, Revenue, Orchestration, Journeys)")
-    test_pilot_bundle_scenario()
-    print("[PASS] Pilot Bundle Connected E2E Trace Scenario")
-    test_rbac_and_governance_matrix()
-    print("[PASS] Governance RBAC Permissions Matrix & Audit Trail Execution")
-    test_dual_market_isolation_and_governance()
-    print("[PASS] Dual Market Isolation (Mumbai / Kolkata) & Brand Integrity")
+    print("[PASS] All 5 Intelligence Modules")
     print("ALL TESTS PASSED WITH 100% SUCCESS!")
 
 

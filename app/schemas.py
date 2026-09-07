@@ -110,6 +110,8 @@ class TicketSummary(BaseModel):
     created_at: datetime
     repeat_flag: bool
     description: str
+    assigned_resource_name: Optional[str] = None
+    region: Optional[str] = None
 
 class InvoiceSummary(BaseModel):
     id: int
@@ -245,7 +247,7 @@ class RecommendJourneyRequest(BaseModel):
 class OrchestrationTicketItem(BaseModel):
     ticket_id: int
     ticket_code: str
-    customer_id: int
+    customer_id: Optional[int] = None
     customer_name: str
     customer_segment: str
     locality: str
@@ -406,4 +408,138 @@ class PilotBundleScenarioResponse(BaseModel):
     related_recommendations: List[RecommendationResponse]
     related_audit_logs: List[AuditLogResponse]
     trace_steps: List[PilotBundleTraceStep]
+
+
+# Resource & Automated Ticketing Schemas
+class ResourceBase(BaseModel):
+    name: str
+    email: Optional[str] = None
+    phone: Optional[str] = None
+    resource_type: str = "FIELD"  # FIELD or INTERNAL
+    region: str
+    status: str = "Available"  # Available, Busy, Offline
+    max_capacity: int = 5
+
+class ResourceCreate(ResourceBase):
+    market_id: str = "mumbai"
+
+class ResourceResponse(ResourceBase):
+    id: int
+    market_id: str
+    active_tickets_count: int = 0
+    created_at: datetime
+
+    class Config:
+        from_attributes = True
+
+class TicketCreateRequest(BaseModel):
+    source: str = "CUSTOMER"  # CUSTOMER or INTERNAL
+    category: str
+    priority: str = "P3"  # P1, P2, P3, P4
+    description: str
+    region: Optional[str] = None  # Locality/Area
+    customer_id: Optional[int] = None
+    node_id: Optional[int] = None
+
+class TicketApproveRequest(BaseModel):
+    notes: Optional[str] = None
+    resource_id: Optional[int] = None  # Manual technician assignment override
+
+class TicketRejectRequest(BaseModel):
+    notes: Optional[str] = None
+
+class TicketResolveRequest(BaseModel):
+    notes: Optional[str] = None
+
+class ApprovalCallLogResponse(BaseModel):
+    id: int
+    market_id: str
+    ticket_id: int
+    recipient_name: str
+    recipient_phone: str
+    recipient_role: str
+    priority: str
+    voice_script: str
+    status: str
+    call_sid: Optional[str] = None
+    duration_seconds: int
+    created_at: datetime
+
+    class Config:
+        from_attributes = True
+
+class TicketDetailResponse(BaseModel):
+    id: int
+    market_id: str
+    ticket_code: str
+    source: str
+    region: Optional[str] = None
+    customer_id: Optional[int] = None
+    customer_name: Optional[str] = None
+    node_id: Optional[int] = None
+    node_code: Optional[str] = None
+    category: str
+    priority: str
+    status: str
+    created_at: datetime
+    resolved_at: Optional[datetime] = None
+    repeat_flag: bool = False
+    description: str
+    ai_triage_action: Optional[str] = None
+    sla_deadline: Optional[datetime] = None
+
+    assigned_resource_id: Optional[int] = None
+    assigned_resource_name: Optional[str] = None
+    assigned_resource_region: Optional[str] = None
+    assigned_resource_type: Optional[str] = None
+    assigned_at: Optional[datetime] = None
+
+    approval_status: str
+    approved_by_id: Optional[int] = None
+    approved_by_name: Optional[str] = None
+    approved_at: Optional[datetime] = None
+    approval_notes: Optional[str] = None
+
+    voice_call_dispatched: bool = False
+    last_call_recipient: Optional[str] = None
+    last_call_script: Optional[str] = None
+    last_call_status: Optional[str] = None
+
+    class Config:
+        from_attributes = True
+
+class TicketingStatsResponse(BaseModel):
+    total_tickets: int
+    auto_assigned_p3_p4: int
+    pending_approval_p1_p2: int
+    internal_auto_assigned: int
+    resolved_tickets: int
+    total_resources: int
+    available_resources: int
+
+
+class ResourceTimelineItem(BaseModel):
+    ticket_id: int
+    ticket_code: str
+    category: str
+    priority: str
+    status: str
+    customer_name: Optional[str] = None
+    locality: Optional[str] = None
+    description: str
+    assigned_at: Optional[datetime] = None
+    resolved_at: Optional[datetime] = None
+    sla_deadline: Optional[datetime] = None
+    minutes_to_sla: Optional[int] = None
+    urgency_level: str  # 'Critical', 'Warning', 'Nominal', 'Overdue'
+
+
+class ResourceTimelineResponse(BaseModel):
+    resource: ResourceResponse
+    active_tickets: List[ResourceTimelineItem]
+    resolved_tickets: List[ResourceTimelineItem]
+    total_active: int
+    total_resolved: int
+    urgent_count: int
+    next_sla_deadline: Optional[datetime] = None
 

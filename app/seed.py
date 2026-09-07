@@ -2,14 +2,21 @@ import random
 from datetime import datetime, timedelta
 from app.database import SessionLocal, engine, Base
 from app.models import (
-    User, Node, Customer, UsageRecord, Ticket, Invoice, Recommendation, AuditLog
+    User, Node, Customer, UsageRecord, Ticket, Invoice, Recommendation, AuditLog, Resource
 )
 from app.auth import hash_password
 
 def seed_database():
-    print("Recreating database tables in Supabase / PostgreSQL...")
-    Base.metadata.drop_all(bind=engine)
+    print("Ensuring database tables in Supabase / PostgreSQL...")
     Base.metadata.create_all(bind=engine)
+
+    from sqlalchemy import text
+    try:
+        with engine.connect() as conn:
+            conn.execute(text("TRUNCATE TABLE audit_logs, recommendations, invoices, tickets, usage_records, customers, resources, nodes, users CASCADE;"))
+            conn.commit()
+    except Exception as e:
+        print(f"Note on truncate: {e}")
 
     db = SessionLocal()
     try:
@@ -138,6 +145,69 @@ def seed_market_dataset(db, market_id: str, users: list):
         nodes.append(node)
     db.commit()
 
+    # 1b. Seed Regional & Internal Team Resources
+    print(f"Seeding regional field resources & internal team for {market_id}...")
+    if is_mumbai:
+        resources_config = [
+            ("Rohan Mhatre", "rohan.m@pmrg.in", "+91 98201 10011", "FIELD", "Bandra West"),
+            ("Suraj Ghadge", "suraj.g@pmrg.in", "+91 98201 10012", "FIELD", "Andheri East"),
+            ("Nitin Shinde", "nitin.s@pmrg.in", "+91 98201 10013", "FIELD", "Malad West"),
+            ("Deepak Sawant", "deepak.s@pmrg.in", "+91 98201 10014", "FIELD", "BKC"),
+            ("Kiran More", "kiran.m@pmrg.in", "+91 98201 10015", "FIELD", "Powai"),
+            ("Ajay Pawar", "ajay.p@pmrg.in", "+91 98201 10016", "FIELD", "Lower Parel"),
+            ("Prashant Jadhav", "prashant.j@pmrg.in", "+91 98201 10017", "FIELD", "Dadar"),
+            ("Santosh Kadam", "santosh.k@pmrg.in", "+91 98201 10018", "FIELD", "Thane West"),
+            ("Sachin Rane", "sachin.r@pmrg.in", "+91 98201 10019", "FIELD", "Worli"),
+            ("Manish Tambe", "manish.t@pmrg.in", "+91 98201 10020", "FIELD", "Borivali"),
+            ("Vinod Gaikwad", "vinod.g@pmrg.in", "+91 98201 10021", "FIELD", "Juhu"),
+            ("Ganesh Surve", "ganesh.s@pmrg.in", "+91 98201 10022", "FIELD", "Ghatkopar"),
+            ("Amitav Roy (Lead NOC Tech)", "amitav.noc@pmrg.in", "+91 98201 20001", "INTERNAL", "Internal Operations"),
+            ("Priyanka Sen (Core BSS Systems)", "priyanka.bss@pmrg.in", "+91 98201 20002", "INTERNAL", "Internal Operations"),
+            ("Tanmay Varma (Platform Ops)", "tanmay.infra@pmrg.in", "+91 98201 20003", "INTERNAL", "Internal Operations"),
+        ]
+    else:
+        resources_config = [
+            ("Subir Das", "subir.d@pmrg.in", "+91 98301 10011", "FIELD", "Salt Lake Sector V"),
+            ("Anirban Ghosh", "anirban.g@pmrg.in", "+91 98301 10012", "FIELD", "Park Street"),
+            ("Debojyoti Paul", "debojyoti.p@pmrg.in", "+91 98301 10013", "FIELD", "New Town"),
+            ("Sujit Mukherjee", "sujit.m@pmrg.in", "+91 98301 10014", "FIELD", "Ballygunge"),
+            ("Biplab Mondal", "biplab.m@pmrg.in", "+91 98301 10015", "FIELD", "Howrah"),
+            ("Sanjay Chakraborty", "sanjay.c@pmrg.in", "+91 98301 10016", "FIELD", "Jadavpur"),
+            ("Prasenjit Sen", "prasenjit.s@pmrg.in", "+91 98301 10017", "FIELD", "Behala"),
+            ("Tapas Sarkar", "tapas.s@pmrg.in", "+91 98301 10018", "FIELD", "Dum Dum"),
+            ("Sandip Majumdar", "sandip.m@pmrg.in", "+91 98301 10019", "FIELD", "Alipore"),
+            ("Abhijit Dutta", "abhijit.d@pmrg.in", "+91 98301 10020", "FIELD", "Gariahat"),
+            ("Prosun Roy", "prosun.r@pmrg.in", "+91 98301 10021", "FIELD", "Rajarhat"),
+            ("Soumitra Bose", "soumitra.b@pmrg.in", "+91 98301 10022", "FIELD", "Shyambazar"),
+            ("Ritwick Banerjee (Eastern NOC Lead)", "ritwick.noc@pmrg.in", "+91 98301 20001", "INTERNAL", "Internal Operations"),
+            ("Sharmila Mitra (Core Systems Specialist)", "sharmila.bss@pmrg.in", "+91 98301 20002", "INTERNAL", "Internal Operations"),
+            ("Indranil Guha (Switch Infrastructure)", "indranil.infra@pmrg.in", "+91 98301 20003", "INTERNAL", "Internal Operations"),
+        ]
+
+    resources = []
+    res_by_region = {}
+    internal_resources = []
+    for r_name, r_email, r_phone, r_type, r_region in resources_config:
+        res = Resource(
+            market_id=market_id,
+            name=r_name,
+            email=r_email,
+            phone=r_phone,
+            resource_type=r_type,
+            region=r_region,
+            status="Available",
+            active_tickets_count=0,
+            max_capacity=10 if r_type == "INTERNAL" else 8,
+            created_at=datetime.utcnow() - timedelta(days=90)
+        )
+        db.add(res)
+        resources.append(res)
+        if r_type == "INTERNAL":
+            internal_resources.append(res)
+        else:
+            res_by_region[r_region.lower()] = res
+    db.commit()
+
     prepaid_plans = [
         ("Hero Unlimited 1.5GB/Day (28d)", 299.0, 28, 1.5, 345.0, "Prepaid - Daily Unlimited"),
         ("Super 5G 2GB/Day + Hotstar (28d)", 349.0, 28, 2.0, 395.0, "Prepaid - 5G High Speed"),
@@ -155,16 +225,16 @@ def seed_market_dataset(db, market_id: str, users: list):
         ("Postpaid Premium Dedicated 1Gbps", 22000.0, 30, 2500.0, 22000.0, "Postpaid - Enterprise ILL"),
     ]
 
-    # 2. Seed Customers (~1,000 customers per market)
-    print(f"Seeding 1,000 subscribers for {market_id}...")
+    # 2. Seed Customers (300 subscribers per market)
+    print(f"Seeding 300 subscribers for {market_id}...")
     customers = []
     node_map = {n.area: n for n in nodes}
     areas = [n.area for n in nodes]
 
     cust_prefix = "MUM" if is_mumbai else "KOL"
 
-    for i in range(1, 1001):
-        is_prepaid = (i <= 700)
+    for i in range(1, 301):
+        is_prepaid = (i <= 210)
         area = random.choice(areas)
         node = node_map[area]
         is_node_degraded = (node.status in ['Degraded', 'Critical'])
@@ -291,31 +361,152 @@ def seed_market_dataset(db, market_id: str, users: list):
     db.commit()
 
     # 4. Seed Support Tickets
-    print(f"Seeding service tickets for {market_id}...")
+    print(f"Seeding service tickets & automated dispatch rules for {market_id}...")
     tickets = []
     for idx, (cust, _, node_deg) in enumerate(customers):
         if cust.status == "At-Risk" or node_deg or random.random() < 0.10:
             category = random.choice(["Outage", "Speed", "Speed", "Hardware", "Billing"])
-            priority = "Critical" if category == "Outage" and node_deg else ("High" if category == "Speed" and node_deg else "Medium")
-            t_status = "Open" if random.random() < 0.6 else "In-Progress"
+            # Map into P1, P2, P3, P4
+            if category == "Outage" and node_deg:
+                priority = "P1"
+            elif category == "Speed" and node_deg:
+                priority = "P2"
+            elif category in ["Speed", "Hardware"]:
+                priority = "P3"
+            else:
+                priority = "P4"
+
             repeat = (random.random() < 0.35)
+            field_res = res_by_region.get(cust.locality.lower()) or (resources[0] if resources else None)
+
+            # Balanced Workload: cap active tickets per engineer at 3, mark remaining as Resolved
+            res_active_count = field_res.active_tickets_count if field_res else 0
+            is_resolved = (res_active_count >= 3)
+
+            if is_resolved:
+                t_status = "Resolved"
+                appr_status = "APPROVED"
+                assigned_res_id = field_res.id if field_res else None
+                assigned_dt = datetime.utcnow() - timedelta(hours=random.randint(12, 48))
+                resolved_dt = assigned_dt + timedelta(hours=random.randint(1, 4))
+                appr_by_id = users[1].id if len(users) > 1 else None
+                appr_dt = assigned_dt
+                appr_notes = "Resolved and line calibrated"
+                sla_dt = assigned_dt + timedelta(hours=random.randint(4, 12))
+                ai_action = f"Resolved by {field_res.name if field_res else 'field team'}"
+            elif priority in ["P3", "P4"]:
+                # P3/P4: Auto-assign immediately without approval
+                t_status = "Assigned"
+                appr_status = "NOT_REQUIRED"
+                assigned_res_id = field_res.id if field_res else None
+                assigned_dt = datetime.utcnow() - timedelta(hours=random.randint(1, 12))
+                resolved_dt = None
+                appr_by_id = None
+                appr_dt = None
+                appr_notes = None
+                # Stagger SLA deadlines for active tickets
+                sla_offsets = [1.5, 3.5, 6.0]
+                offset_hrs = sla_offsets[res_active_count % len(sla_offsets)]
+                sla_dt = datetime.utcnow() + timedelta(hours=offset_hrs, minutes=random.randint(5, 30))
+                if field_res:
+                    field_res.active_tickets_count += 1
+                ai_action = f"Auto-assigned ({priority} Zero-Touch) to {field_res.region if field_res else 'regional'} engineer {field_res.name if field_res else 'On-Duty'}"
+            else:
+                # P1/P2: Half pending approval, half approved & auto-assigned
+                is_pending = (random.random() < 0.5)
+                resolved_dt = None
+                if is_pending:
+                    t_status = "Pending Approval"
+                    appr_status = "PENDING_APPROVAL"
+                    assigned_res_id = None
+                    assigned_dt = None
+                    appr_by_id = None
+                    appr_dt = None
+                    appr_notes = None
+                    sla_dt = datetime.utcnow() + timedelta(hours=random.randint(2, 4))
+                    ai_action = f"High-Impact Incident ({priority}): Managerial approval required before automated field dispatch"
+                else:
+                    t_status = "Assigned"
+                    appr_status = "APPROVED"
+                    assigned_res_id = field_res.id if field_res else None
+                    assigned_dt = datetime.utcnow() - timedelta(hours=random.randint(1, 6))
+                    appr_by_id = users[1].id if len(users) > 1 else None
+                    appr_dt = assigned_dt
+                    appr_notes = f"Approved by {users[1].full_name if len(users) > 1 else 'NOC'} for immediate regional dispatch"
+                    sla_dt = datetime.utcnow() + timedelta(hours=random.randint(1, 3), minutes=random.randint(10, 45))
+                    if field_res:
+                        field_res.active_tickets_count += 1
+                    ai_action = f"Approved by {users[1].full_name if len(users) > 1 else 'NOC'} & auto-dispatched to {field_res.name if field_res else 'field engineer'}"
 
             t = Ticket(
                 market_id=market_id,
                 ticket_code=f"TCK-{cust_prefix}-{1000 + len(tickets) + 1}",
+                source="CUSTOMER",
+                region=cust.locality,
                 customer_id=cust.id,
                 node_id=cust.node_id,
                 category=category,
                 priority=priority,
                 status=t_status,
                 created_at=datetime.utcnow() - timedelta(hours=random.randint(1, 48)),
+                resolved_at=resolved_dt,
                 repeat_flag=repeat,
                 description=f"Subscriber in {cust.locality} reports intermittent {category.lower()} on node {node_map[cust.locality].node_code}.",
-                ai_triage_action="Automated QoS & SFP Diagnostics Triaged",
-                sla_deadline=datetime.utcnow() + timedelta(hours=random.randint(2, 8))
+                ai_triage_action=ai_action,
+                sla_deadline=sla_dt,
+                assigned_resource_id=assigned_res_id,
+                assigned_at=assigned_dt,
+                approval_status=appr_status,
+                approved_by_id=appr_by_id,
+                approved_at=appr_dt,
+                approval_notes=appr_notes
             )
             db.add(t)
             tickets.append(t)
+
+    # Seed Internal Team Tickets
+    internal_ticket_templates = [
+        ("Core Network", "P2", "Upstream DWDM link flapping between aggregation switch and core router"),
+        ("Optical Backbone", "P1", "OTDR telemetry indicates micro-bend attenuation (>4.2 dB) on primary feeder trunk"),
+        ("BSS Mediation", "P3", "Billing mediation webhook retry buffer approaching 80% watermark"),
+        ("RADIUS Gateway", "P2", "Subscriber AAA authentication latency elevated above 450ms"),
+        ("Server Infrastructure", "P3", "Log rotation cron job failed on syslog ingestor pool node 2")
+    ]
+    for idx_int, (cat, prio, desc) in enumerate(internal_ticket_templates):
+        int_res = internal_resources[idx_int % len(internal_resources)] if internal_resources else None
+        if int_res and int_res.active_tickets_count < 3:
+            int_res.active_tickets_count += 1
+            t_int_status = "Assigned"
+            t_int_resolved = None
+            sla_int = datetime.utcnow() + timedelta(hours=2 + idx_int * 2)
+        else:
+            t_int_status = "Resolved"
+            t_int_resolved = datetime.utcnow() - timedelta(hours=random.randint(6, 24))
+            sla_int = datetime.utcnow() - timedelta(hours=2)
+
+        t_int = Ticket(
+            market_id=market_id,
+            ticket_code=f"TCK-{cust_prefix}-INT-{len(tickets) + 1}",
+            source="INTERNAL",
+            region="Internal Operations",
+            customer_id=None,
+            node_id=nodes[0].id if nodes else None,
+            category=cat,
+            priority=prio,
+            status=t_int_status,
+            created_at=datetime.utcnow() - timedelta(hours=random.randint(2, 24)),
+            resolved_at=t_int_resolved,
+            repeat_flag=False,
+            description=desc,
+            ai_triage_action=f"Auto-assigned to Internal NOC Team: {int_res.name if int_res else 'Core NOC'}",
+            sla_deadline=sla_int,
+            assigned_resource_id=int_res.id if int_res else None,
+            assigned_at=datetime.utcnow() - timedelta(hours=random.randint(1, 12)),
+            approval_status="NOT_REQUIRED"
+        )
+        db.add(t_int)
+        tickets.append(t_int)
+
     db.commit()
 
     # 5. Seed Invoices & Revenue Anomalies
@@ -378,11 +569,11 @@ def seed_market_dataset(db, market_id: str, users: list):
 
     # 6. Seed Recommendations across 5 modules
     print(f"Seeding AI recommendations for {market_id}...")
-    crit_node = next(n for n in nodes if n.status in ["Critical", "Degraded"])
-    at_risk_c = next(c for c, _, _ in customers if c.status == "At-Risk")
-    renewal_c = next(c for c, _, _ in customers if c.current_stage == "Renewal")
-    open_t = next(t for t in tickets if t.status == "Open")
-    anom_inv = next(i for i in invoices if i.anomaly_flag)
+    crit_node = next((n for n in nodes if n.status in ["Critical", "Degraded"]), nodes[0])
+    at_risk_c = next((c for c, _, _ in customers if c.status == "At-Risk"), customers[0][0])
+    renewal_c = next((c for c, _, _ in customers if c.current_stage == "Renewal"), customers[0][0])
+    open_t = next((t for t in tickets if t.status in ["Open", "Assigned", "Pending Approval"]), tickets[0] if tickets else None)
+    anom_inv = next((i for i in invoices if i.anomaly_flag), invoices[0])
 
     # Rec 1: Assurance
     r1 = Recommendation(
@@ -463,6 +654,24 @@ def seed_market_dataset(db, market_id: str, users: list):
         created_at=datetime.utcnow() - timedelta(hours=6)
     )
     db.add(r5)
+
+    # Rec 6: Automatic Ticketing & Regional Dispatch (sync with PENDING_APPROVAL tickets)
+    pending_tickets = [t for t in tickets if t.approval_status == "PENDING_APPROVAL"]
+    for pt in pending_tickets[:3]:
+        r_tick = Recommendation(
+            market_id=market_id,
+            source_module="Automatic Ticketing & Regional Dispatch",
+            target_entity_type="Ticket",
+            target_entity_id=pt.id,
+            target_entity_label=f"Ticket {pt.ticket_code} ({pt.priority} - {pt.category})",
+            title=f"Dispatch Approval Required: {pt.ticket_code} ({pt.priority})",
+            description=f"High-impact {pt.priority} incident logged in {pt.region}. Requires supervisory sign-off before regional field dispatch.",
+            recommended_action=f"Approve automated field dispatch to optimal regional resource in {pt.region}.",
+            confidence_score=0.96,
+            status="PENDING",
+            created_at=datetime.utcnow() - timedelta(hours=3)
+        )
+        db.add(r_tick)
 
     # 7. Seed Audit Logs
     noc_user = next(u for u in users if u.role == "NOC")

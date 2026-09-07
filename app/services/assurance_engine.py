@@ -22,7 +22,7 @@ def evaluate_node_degradations(db: Session, market_id: str = "mumbai") -> List[N
 
     open_tickets = db.query(Ticket.node_id).filter(
         Ticket.node_id.isnot(None),
-        Ticket.status.in_(['Open', 'In-Progress']),
+        Ticket.status.notin_(['Resolved', 'Closed', 'Rejected']),
         Ticket.market_id == market_id
     ).all()
     node_ticket_counts: Dict[int, int] = {}

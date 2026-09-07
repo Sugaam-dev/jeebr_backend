@@ -152,9 +152,10 @@ def evaluate_single_ticket_orchestration(
             Recommendation.status == 'PENDING'
         ).first() is not None
 
-    cust_name = customer.name if customer else "Unknown"
-    cust_segment = customer.segment if customer else "Home Broadband"
-    locality = customer.locality if customer else (node.area if node else "Regional")
+    is_internal = ticket.source == 'INTERNAL' or not ticket.customer_id
+    cust_name = customer.name if customer else ("Internal NOC / Network Core" if is_internal else "Direct Subscriber")
+    cust_segment = customer.segment if customer else ("Internal Infrastructure" if is_internal else "Home Broadband")
+    locality = customer.locality if customer else (ticket.region or (node.area if node else "Regional Operations"))
 
     score, priority_lvl, wf_type, rec_action, conf, sla_risk, factors = evaluate_ticket_triage(
         ticket, db, customer=customer, node=node
@@ -186,7 +187,7 @@ def evaluate_single_ticket_orchestration(
 
 def evaluate_ticket_orchestrations(db: Session, market_id: str = "mumbai") -> List[OrchestrationTicketItem]:
     tickets = db.query(Ticket).filter(
-        Ticket.status.in_(['Open', 'In-Progress']),
+        Ticket.status.notin_(['Resolved', 'Closed', 'Rejected']),
         Ticket.market_id == market_id
     ).all()
     if not tickets:
