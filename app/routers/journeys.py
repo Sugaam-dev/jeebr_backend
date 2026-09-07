@@ -8,6 +8,7 @@ from app.schemas import (
     JourneyFunnelSummaryResponse
 )
 from app.auth import get_current_user, require_roles
+from app.markets import get_current_market
 from app.services.journey_engine import (
     evaluate_customer_journeys, evaluate_single_customer_journey, get_journey_funnel_summary
 )
@@ -18,22 +19,25 @@ router = APIRouter(prefix="/journeys", tags=["Intelligent Customer Journeys"])
 @router.get("/funnel-summary", response_model=JourneyFunnelSummaryResponse)
 def get_funnel_summary(
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user)
+    current_user: User = Depends(get_current_user),
+    market: str = Depends(get_current_market)
 ):
-    return get_journey_funnel_summary(db)
+    return get_journey_funnel_summary(db, market_id=market)
 
 @router.get("/next-best-actions", response_model=List[JourneyCustomerItem])
 def list_journey_nbas(
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user)
+    current_user: User = Depends(get_current_user),
+    market: str = Depends(get_current_market)
 ):
-    return evaluate_customer_journeys(db)
+    return evaluate_customer_journeys(db, market_id=market)
 
 @router.post("/recommend", response_model=RecommendationResponse)
 def propose_journey_action(
     req: RecommendJourneyRequest,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user)
+    current_user: User = Depends(get_current_user),
+    market: str = Depends(get_current_market)
 ):
     customer = db.query(Customer).filter(Customer.id == req.customer_id).first()
     if not customer:
@@ -54,6 +58,7 @@ def propose_journey_action(
         description=f"{matched.action_reason if matched else 'Customer lifecycle optimization'}. {action_text}",
         recommended_action=action_text,
         confidence_score=confidence,
+        market_id=customer.market_id or market,
         action_payload={
             "customer_code": customer.customer_code,
             "stage": customer.current_stage,

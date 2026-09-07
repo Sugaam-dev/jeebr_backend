@@ -5,6 +5,7 @@ from app.database import get_db
 from app.models import Ticket, User
 from app.schemas import OrchestrationTicketItem, RecommendOrchestrationRequest, RecommendationResponse
 from app.auth import get_current_user, require_roles
+from app.markets import get_current_market
 from app.services.orchestration_engine import (
     evaluate_ticket_orchestrations, evaluate_single_ticket_orchestration
 )
@@ -15,15 +16,17 @@ router = APIRouter(prefix="/orchestration", tags=["AI-driven OSS/BSS Orchestrati
 @router.get("/queue", response_model=List[OrchestrationTicketItem])
 def get_orchestration_queue(
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user)
+    current_user: User = Depends(get_current_user),
+    market: str = Depends(get_current_market)
 ):
-    return evaluate_ticket_orchestrations(db)
+    return evaluate_ticket_orchestrations(db, market_id=market)
 
 @router.post("/recommend", response_model=RecommendationResponse)
 def propose_orchestration_workflow(
     req: RecommendOrchestrationRequest,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user)
+    current_user: User = Depends(get_current_user),
+    market: str = Depends(get_current_market)
 ):
     ticket = db.query(Ticket).filter(Ticket.id == req.ticket_id).first()
     if not ticket:
@@ -44,6 +47,7 @@ def propose_orchestration_workflow(
         description=f"AI triage recommendation for {ticket.category} complaint: {action_text}",
         recommended_action=action_text,
         confidence_score=confidence,
+        market_id=ticket.market_id or market,
         action_payload={
             "ticket_code": ticket.ticket_code,
             "category": ticket.category,

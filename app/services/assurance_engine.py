@@ -3,13 +3,16 @@ from sqlalchemy.orm import Session
 from app.models import Node, Customer, Ticket, Recommendation
 from app.schemas import NodeDegradationPrediction, ContributingSignal
 
-def evaluate_node_degradations(db: Session) -> List[NodeDegradationPrediction]:
-    nodes = db.query(Node).all()
+def evaluate_node_degradations(db: Session, market_id: str = "mumbai") -> List[NodeDegradationPrediction]:
+    nodes = db.query(Node).filter(Node.market_id == market_id).all()
     if not nodes:
         return []
 
-    # Batch queries
-    all_customers = db.query(Customer.node_id, Customer.segment).filter(Customer.node_id.isnot(None)).all()
+    # Batch queries scoped to market
+    all_customers = db.query(Customer.node_id, Customer.segment).filter(
+        Customer.node_id.isnot(None),
+        Customer.market_id == market_id
+    ).all()
     node_cust_counts: Dict[int, int] = {}
     node_corp_counts: Dict[int, int] = {}
     for node_id, segment in all_customers:
@@ -19,7 +22,8 @@ def evaluate_node_degradations(db: Session) -> List[NodeDegradationPrediction]:
 
     open_tickets = db.query(Ticket.node_id).filter(
         Ticket.node_id.isnot(None),
-        Ticket.status.in_(['Open', 'In-Progress'])
+        Ticket.status.in_(['Open', 'In-Progress']),
+        Ticket.market_id == market_id
     ).all()
     node_ticket_counts: Dict[int, int] = {}
     for (node_id,) in open_tickets:
@@ -29,7 +33,8 @@ def evaluate_node_degradations(db: Session) -> List[NodeDegradationPrediction]:
         r.target_entity_id for r in db.query(Recommendation.target_entity_id).filter(
             Recommendation.source_module == 'Predictive Service Assurance',
             Recommendation.target_entity_type == 'Node',
-            Recommendation.status == 'PENDING'
+            Recommendation.status == 'PENDING',
+            Recommendation.market_id == market_id
         ).all()
     }
 

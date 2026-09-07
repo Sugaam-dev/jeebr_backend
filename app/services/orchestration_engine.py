@@ -107,8 +107,9 @@ def evaluate_ticket_triage(
             impact_type="negative"
         ))
     else:
+        city = (node.area.split()[0] if node else (customer.locality.split()[0] if customer else "Regional"))
         workflow_type = "Priority Installation Fast-Track"
-        rec_action = "Re-assign priority slot to Mumbai Zone 1 fast-track installation crew."
+        rec_action = f"Re-assign priority slot to {city} Zone 1 fast-track installation crew."
         confidence = 0.88
         factors.append(ContributingSignal(
             signal="Provisioning Stage Triage",
@@ -153,7 +154,7 @@ def evaluate_single_ticket_orchestration(
 
     cust_name = customer.name if customer else "Unknown"
     cust_segment = customer.segment if customer else "Home Broadband"
-    locality = customer.locality if customer else (node.area if node else "Mumbai")
+    locality = customer.locality if customer else (node.area if node else "Regional")
 
     score, priority_lvl, wf_type, rec_action, conf, sla_risk, factors = evaluate_ticket_triage(
         ticket, db, customer=customer, node=node
@@ -183,8 +184,11 @@ def evaluate_single_ticket_orchestration(
         has_pending_recommendation=has_pending
     )
 
-def evaluate_ticket_orchestrations(db: Session) -> List[OrchestrationTicketItem]:
-    tickets = db.query(Ticket).filter(Ticket.status.in_(['Open', 'In-Progress'])).all()
+def evaluate_ticket_orchestrations(db: Session, market_id: str = "mumbai") -> List[OrchestrationTicketItem]:
+    tickets = db.query(Ticket).filter(
+        Ticket.status.in_(['Open', 'In-Progress']),
+        Ticket.market_id == market_id
+    ).all()
     if not tickets:
         return []
 
@@ -201,7 +205,8 @@ def evaluate_ticket_orchestrations(db: Session) -> List[OrchestrationTicketItem]
             Recommendation.source_module == 'AI-driven OSS/BSS Orchestration',
             Recommendation.target_entity_type == 'Ticket',
             Recommendation.target_entity_id.in_(ticket_ids),
-            Recommendation.status == 'PENDING'
+            Recommendation.status == 'PENDING',
+            Recommendation.market_id == market_id
         ).all()
     } if ticket_ids else set()
 

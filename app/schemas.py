@@ -126,6 +126,7 @@ class InvoiceSummary(BaseModel):
 
 class CustomerListResponse(BaseModel):
     id: int
+    market_id: Optional[str] = "mumbai"
     customer_code: str
     name: str
     email: str

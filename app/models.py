@@ -25,9 +25,10 @@ class Node(Base):
     __tablename__ = 'nodes'
 
     id = Column(Integer, primary_key=True, index=True)
+    market_id = Column(String(50), default='mumbai', index=True, nullable=False)
     node_code = Column(String(50), unique=True, index=True, nullable=False)
     node_name = Column(String(100), nullable=False)
-    area = Column(String(100), index=True, nullable=False)  # Mumbai locality
+    area = Column(String(100), index=True, nullable=False)  # Regional locality
     node_type = Column(String(50), nullable=False)  # OLT, ONT, Core Switch, FDH
     utilization_pct = Column(Float, default=0.0)
     packet_loss_pct = Column(Float, default=0.0)
@@ -47,6 +48,7 @@ class Customer(Base):
     __tablename__ = 'customers'
 
     id = Column(Integer, primary_key=True, index=True)
+    market_id = Column(String(50), default='mumbai', index=True, nullable=False)
     customer_code = Column(String(50), unique=True, index=True, nullable=False)
     name = Column(String(150), nullable=False)
     email = Column(String(150), nullable=False)
@@ -86,6 +88,7 @@ class UsageRecord(Base):
     __tablename__ = 'usage_records'
 
     id = Column(Integer, primary_key=True, index=True)
+    market_id = Column(String(50), default='mumbai', index=True, nullable=False)
     customer_id = Column(Integer, ForeignKey('customers.id'), nullable=False)
     monthly_gb = Column(Float, default=0.0)
     quota_gb = Column(Float, default=500.0)
@@ -102,6 +105,7 @@ class Ticket(Base):
     __tablename__ = 'tickets'
 
     id = Column(Integer, primary_key=True, index=True)
+    market_id = Column(String(50), default='mumbai', index=True, nullable=False)
     ticket_code = Column(String(50), unique=True, index=True, nullable=False)
     customer_id = Column(Integer, ForeignKey('customers.id'), nullable=False)
     node_id = Column(Integer, ForeignKey('nodes.id'), nullable=True)
@@ -123,6 +127,7 @@ class Invoice(Base):
     __tablename__ = 'invoices'
 
     id = Column(Integer, primary_key=True, index=True)
+    market_id = Column(String(50), default='mumbai', index=True, nullable=False)
     invoice_code = Column(String(50), unique=True, index=True, nullable=False)
     customer_id = Column(Integer, ForeignKey('customers.id'), nullable=False)
     plan_name = Column(String(100), nullable=False)
@@ -148,6 +153,7 @@ class Recommendation(Base):
     __tablename__ = 'recommendations'
 
     id = Column(Integer, primary_key=True, index=True)
+    market_id = Column(String(50), default='mumbai', index=True, nullable=False)
     source_module = Column(String(100), nullable=False)  # Predictive Service Assurance, Churn Prediction, Intelligent Journeys, OSS/BSS Orchestration, Revenue Assurance
     target_entity_type = Column(String(50), nullable=False)  # Node, Customer, Ticket, Invoice
     target_entity_id = Column(Integer, nullable=False)
@@ -171,6 +177,7 @@ class AuditLog(Base):
     __tablename__ = 'audit_logs'
 
     id = Column(Integer, primary_key=True, index=True)
+    market_id = Column(String(50), default='mumbai', index=True, nullable=False)
     recommendation_id = Column(Integer, ForeignKey('recommendations.id'), nullable=True)
     source_module = Column(String(100), nullable=False)
     action_taken = Column(String(200), nullable=False)

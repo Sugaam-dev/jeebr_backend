@@ -177,23 +177,24 @@ def evaluate_single_customer_journey(
         has_pending_recommendation=has_pending
     )
 
-def evaluate_customer_journeys(db: Session) -> List[JourneyCustomerItem]:
-    customers = db.query(Customer).all()
+def evaluate_customer_journeys(db: Session, market_id: str = "mumbai") -> List[JourneyCustomerItem]:
+    customers = db.query(Customer).filter(Customer.market_id == market_id).all()
     if not customers:
         return []
 
-    # Batch fetch in single round-trips to eliminate N+1 latency
-    all_usage = {u.customer_id: u for u in db.query(UsageRecord).all()}
+    # Batch fetch in single round-trips scoped to market
+    all_usage = {u.customer_id: u for u in db.query(UsageRecord).filter(UsageRecord.market_id == market_id).all()}
 
     all_tickets: Dict[int, List[Ticket]] = {}
-    for t in db.query(Ticket).order_by(Ticket.created_at.desc()).all():
+    for t in db.query(Ticket).filter(Ticket.market_id == market_id).order_by(Ticket.created_at.desc()).all():
         all_tickets.setdefault(t.customer_id, []).append(t)
 
     pending_rec_cust_ids = {
         r.target_entity_id for r in db.query(Recommendation.target_entity_id).filter(
             Recommendation.source_module == 'Intelligent Customer Journeys',
             Recommendation.target_entity_type == 'Customer',
-            Recommendation.status == 'PENDING'
+            Recommendation.status == 'PENDING',
+            Recommendation.market_id == market_id
         ).all()
     }
 
@@ -210,8 +211,8 @@ def evaluate_customer_journeys(db: Session) -> List[JourneyCustomerItem]:
 
     return journey_items
 
-def get_journey_funnel_summary(db: Session) -> JourneyFunnelSummaryResponse:
-    customers = db.query(Customer).all()
+def get_journey_funnel_summary(db: Session, market_id: str = "mumbai") -> JourneyFunnelSummaryResponse:
+    customers = db.query(Customer).filter(Customer.market_id == market_id).all()
     total = len(customers) or 1
 
     stage_groups: Dict[str, List[Customer]] = {st: [] for st in LIFECYCLE_STAGES}
@@ -247,14 +248,15 @@ def get_journey_funnel_summary(db: Session) -> JourneyFunnelSummaryResponse:
     # Channel breakdown
     channel_counts = [
         {"channel": "WhatsApp Interactive", "share_pct": 38.5, "conversion_rate": "72%"},
-        {"channel": "PMRG Self-Care App", "share_pct": 28.0, "conversion_rate": "64%"},
+        {"channel": "Subscriber Self-Care App", "share_pct": 28.0, "conversion_rate": "64%"},
         {"channel": "Direct Phone Call", "share_pct": 18.2, "conversion_rate": "81%"},
         {"channel": "Email / Portal", "share_pct": 15.3, "conversion_rate": "42%"}
     ]
 
     active_proposals = db.query(Recommendation).filter(
         Recommendation.source_module == 'Intelligent Customer Journeys',
-        Recommendation.status == 'PENDING'
+        Recommendation.status == 'PENDING',
+        Recommendation.market_id == market_id
     ).count()
 
     return JourneyFunnelSummaryResponse(

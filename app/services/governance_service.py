@@ -13,20 +13,23 @@ def create_or_get_recommendation(
     description: str,
     recommended_action: str,
     confidence_score: float,
-    action_payload: Optional[Dict[str, Any]] = None
+    action_payload: Optional[Dict[str, Any]] = None,
+    market_id: str = "mumbai"
 ) -> Recommendation:
-    # Check if already exists in PENDING status
+    # Check if already exists in PENDING status for this market
     existing = db.query(Recommendation).filter(
         Recommendation.source_module == source_module,
         Recommendation.target_entity_type == target_entity_type,
         Recommendation.target_entity_id == target_entity_id,
-        Recommendation.status == 'PENDING'
+        Recommendation.status == 'PENDING',
+        Recommendation.market_id == market_id
     ).first()
 
     if existing:
         return existing
 
     rec = Recommendation(
+        market_id=market_id,
         source_module=source_module,
         target_entity_type=target_entity_type,
         target_entity_id=target_entity_id,
@@ -63,8 +66,9 @@ def approve_recommendation(
     execution_result = simulate_execution(db, rec)
     rec.status = 'EXECUTED'
 
-    # Create Audit Log
+    # Create Audit Log scoped to market
     audit = AuditLog(
+        market_id=rec.market_id or 'mumbai',
         recommendation_id=rec.id,
         source_module=rec.source_module,
         action_taken=rec.recommended_action,
@@ -73,7 +77,7 @@ def approve_recommendation(
         user_name=user.full_name,
         user_role=user.role,
         confidence_score=rec.confidence_score,
-        original_signals=rec.action_payload.get('signals', {"target": rec.target_entity_label}),
+        original_signals={"action_payload": rec.action_payload},
         execution_result=execution_result,
         timestamp=datetime.utcnow()
     )
@@ -99,6 +103,7 @@ def reject_recommendation(
 
     # Create Audit Log
     audit = AuditLog(
+        market_id=rec.market_id or 'mumbai',
         recommendation_id=rec.id,
         source_module=rec.source_module,
         action_taken=rec.recommended_action,
@@ -120,6 +125,7 @@ def simulate_execution(db: Session, rec: Recommendation) -> Dict[str, Any]:
     # Simulate execution on underlying entities based on source module and entity type
     if rec.source_module == 'Predictive Service Assurance' or rec.target_entity_type == 'Node':
         node = db.query(Node).filter(Node.id == rec.target_entity_id).first()
+        city_prefix = (node.area.split()[0] if node else "Regional")
         if node:
             # Calibrate / improve node
             node.health_score = min(100.0, node.health_score + 25.0)
@@ -127,7 +133,7 @@ def simulate_execution(db: Session, rec: Recommendation) -> Dict[str, Any]:
                 node.status = 'Healthy'
             db.commit()
         return {
-            "action": f"Field Dispatch Order #FDO-2026-{100 + rec.id} dispatched to Mumbai Area Engineering Team",
+            "action": f"Field Dispatch Order #FDO-2026-{100 + rec.id} dispatched to {city_prefix} Area Engineering Team",
             "status": "Dispatched",
             "telemetry_calibration": "OTDR line trace initiated; optical attenuation restored to -21.4 dBm"
         }

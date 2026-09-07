@@ -5,6 +5,7 @@ from app.database import get_db
 from app.models import Customer, User
 from app.schemas import ChurnCustomerPrediction, RecommendRetentionRequest, RecommendationResponse
 from app.auth import get_current_user, require_roles
+from app.markets import get_current_market
 from app.services.churn_engine import get_at_risk_customers, calculate_customer_churn_score
 from app.services.governance_service import create_or_get_recommendation
 
@@ -15,9 +16,10 @@ def list_at_risk_customers(
     min_score: float = Query(30.0, ge=0.0, le=100.0),
     customer_type: Optional[str] = Query(None),
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user)
+    current_user: User = Depends(get_current_user),
+    market: str = Depends(get_current_market)
 ):
-    results = get_at_risk_customers(db, min_score=min_score)
+    results = get_at_risk_customers(db, min_score=min_score, market_id=market)
     if customer_type:
         results = [r for r in results if r.customer_type == customer_type]
     return results
@@ -26,7 +28,8 @@ def list_at_risk_customers(
 def propose_retention_action(
     req: RecommendRetentionRequest,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user)
+    current_user: User = Depends(get_current_user),
+    market: str = Depends(get_current_market)
 ):
     customer = db.query(Customer).filter(Customer.id == req.customer_id).first()
     if not customer:
@@ -45,6 +48,7 @@ def propose_retention_action(
         description=f"At-risk score {score:.1f}% ({risk_lvl} Risk, ₹{rev_risk:,.0f}/yr ARPU at risk). {action_text}",
         recommended_action=action_text,
         confidence_score=round(confidence, 2),
+        market_id=customer.market_id or market,
         action_payload={
             "customer_code": customer.customer_code,
             "customer_type": customer.customer_type,

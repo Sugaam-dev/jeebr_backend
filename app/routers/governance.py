@@ -5,6 +5,7 @@ from app.database import get_db
 from app.models import Recommendation, AuditLog, User
 from app.schemas import RecommendationResponse, AuditLogResponse, ApproveRejectRequest
 from app.auth import get_current_user, require_roles
+from app.markets import get_current_market
 from app.services.governance_service import approve_recommendation, reject_recommendation
 
 router = APIRouter(prefix="/governance", tags=["Human-in-the-Loop AI Governance"])
@@ -23,9 +24,10 @@ def get_recommendations(
     status: Optional[str] = None,
     source_module: Optional[str] = None,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user)
+    current_user: User = Depends(get_current_user),
+    market: str = Depends(get_current_market)
 ):
-    query = db.query(Recommendation)
+    query = db.query(Recommendation).filter(Recommendation.market_id == market)
     if status:
         query = query.filter(Recommendation.status == status)
     if source_module:
@@ -86,9 +88,10 @@ def get_audit_trail(
     decision: Optional[str] = None,
     limit: int = Query(100, le=500),
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user)
+    current_user: User = Depends(get_current_user),
+    market: str = Depends(get_current_market)
 ):
-    query = db.query(AuditLog)
+    query = db.query(AuditLog).filter(AuditLog.market_id == market)
     if source_module:
         query = query.filter(AuditLog.source_module == source_module)
     if decision:

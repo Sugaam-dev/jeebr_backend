@@ -5,6 +5,7 @@ from app.database import get_db
 from app.models import Customer, Node, UsageRecord, Ticket, Invoice, Recommendation
 from app.schemas import CustomerListResponse, Customer360Response, UsageSummary, TicketSummary, InvoiceSummary, NodeResponse
 from app.auth import get_current_user
+from app.markets import get_current_market
 from app.services.churn_engine import evaluate_customer_signals
 from app.services.journey_engine import evaluate_single_customer_journey
 
@@ -20,9 +21,10 @@ def list_customers(
     stage: Optional[str] = None,
     limit: int = Query(60, le=200),
     db: Session = Depends(get_db),
-    current_user = Depends(get_current_user)
+    current_user = Depends(get_current_user),
+    market: str = Depends(get_current_market)
 ):
-    query = db.query(Customer).options(joinedload(Customer.node))
+    query = db.query(Customer).options(joinedload(Customer.node)).filter(Customer.market_id == market)
     if search:
         query = query.filter(
             (Customer.name.ilike(f"%{search}%")) |
@@ -47,6 +49,7 @@ def list_customers(
         node_name = c.node.node_name if c.node else None
         results.append(CustomerListResponse(
             id=c.id,
+            market_id=c.market_id or market,
             customer_code=c.customer_code,
             name=c.name,
             email=c.email,

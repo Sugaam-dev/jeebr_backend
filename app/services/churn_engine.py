@@ -189,29 +189,30 @@ def calculate_customer_churn_score(customer: Customer, db: Session) -> Tuple[flo
     node = db.query(Node).filter(Node.id == customer.node_id).first() if customer.node_id else None
     return evaluate_customer_signals(customer, usage, tickets, invoices, node)
 
-def get_at_risk_customers(db: Session, min_score: float = 30.0) -> List[ChurnCustomerPrediction]:
-    customers = db.query(Customer).filter(Customer.status != 'Churned').all()
+def get_at_risk_customers(db: Session, min_score: float = 30.0, market_id: str = "mumbai") -> List[ChurnCustomerPrediction]:
+    customers = db.query(Customer).filter(Customer.status != 'Churned', Customer.market_id == market_id).all()
     if not customers:
         return []
 
-    # Batch fetch all related data in single round trips
-    all_usage = {u.customer_id: u for u in db.query(UsageRecord).all()}
+    # Batch fetch all related data scoped to market
+    all_usage = {u.customer_id: u for u in db.query(UsageRecord).filter(UsageRecord.market_id == market_id).all()}
     
     all_tickets: Dict[int, List[Ticket]] = {}
-    for t in db.query(Ticket).all():
+    for t in db.query(Ticket).filter(Ticket.market_id == market_id).all():
         all_tickets.setdefault(t.customer_id, []).append(t)
 
     all_invoices: Dict[int, List[Invoice]] = {}
-    for inv in db.query(Invoice).all():
+    for inv in db.query(Invoice).filter(Invoice.market_id == market_id).all():
         all_invoices.setdefault(inv.customer_id, []).append(inv)
 
-    all_nodes = {n.id: n for n in db.query(Node).all()}
+    all_nodes = {n.id: n for n in db.query(Node).filter(Node.market_id == market_id).all()}
 
     pending_rec_ids = {
         r.target_entity_id for r in db.query(Recommendation.target_entity_id).filter(
             Recommendation.source_module == 'Churn Prediction & Retention AI',
             Recommendation.target_entity_type == 'Customer',
-            Recommendation.status == 'PENDING'
+            Recommendation.status == 'PENDING',
+            Recommendation.market_id == market_id
         ).all()
     }
 

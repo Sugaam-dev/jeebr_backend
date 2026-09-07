@@ -9,6 +9,7 @@ from app.schemas import (
     AuditLogResponse, ChurnCustomerPrediction, JourneyCustomerItem
 )
 from app.auth import get_current_user
+from app.markets import get_current_market, MARKETS
 from app.services.churn_engine import evaluate_customer_signals
 from app.services.journey_engine import evaluate_single_customer_journey
 
@@ -16,31 +17,34 @@ router = APIRouter(prefix="/pilot-bundle", tags=["Recommended Pilot Bundle E2E T
 
 @router.get("/scenario", response_model=PilotBundleScenarioResponse)
 def get_pilot_bundle_scenario(
-    node_code: Optional[str] = Query("OLT-BND-01"),
+    node_code: Optional[str] = Query(None),
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user)
+    current_user: User = Depends(get_current_user),
+    market: str = Depends(get_current_market)
 ):
-    # 1. Fetch target degraded node
-    node = db.query(Node).filter(Node.node_code == node_code).first()
+    target_node_code = node_code or MARKETS.get(market, MARKETS["mumbai"]).default_node
+    # 1. Fetch target degraded node scoped to market
+    node = db.query(Node).filter(Node.node_code == target_node_code, Node.market_id == market).first()
     if not node:
-        node = db.query(Node).filter(Node.status.in_(['Critical', 'Degraded'])).first()
+        node = db.query(Node).filter(Node.status.in_(['Critical', 'Degraded']), Node.market_id == market).first()
     if not node:
-        node = db.query(Node).first()
+        node = db.query(Node).filter(Node.market_id == market).first()
     if not node:
-        raise HTTPException(status_code=404, detail="No network nodes found")
+        raise HTTPException(status_code=404, detail=f"No network nodes found for market {market}")
 
     # 2. Fetch impacted at-risk customer connected to this node
     customer = db.query(Customer).filter(
         Customer.node_id == node.id,
-        Customer.status == 'At-Risk'
+        Customer.status == 'At-Risk',
+        Customer.market_id == market
     ).first()
 
     if not customer:
-        customer = db.query(Customer).filter(Customer.node_id == node.id).first()
+        customer = db.query(Customer).filter(Customer.node_id == node.id, Customer.market_id == market).first()
     if not customer:
-        customer = db.query(Customer).first()
+        customer = db.query(Customer).filter(Customer.market_id == market).first()
     if not customer:
-        raise HTTPException(status_code=404, detail="No customer records found")
+        raise HTTPException(status_code=404, detail=f"No customer records found for market {market}")
 
     # 3. Fetch related tickets
     tickets = db.query(Ticket).filter(
@@ -96,25 +100,26 @@ def get_pilot_bundle_scenario(
     # 5. Compute Journey NBA directly for this customer (zero extra DB queries)
     matched_journey = evaluate_single_customer_journey(customer, db, usage=usage, tickets=tickets)
 
-    # 6. Fetch related recommendations for both Node and Customer
+    # 6. Fetch related recommendations for both Node and Customer scoped to market
     recs = db.query(Recommendation).filter(
+        Recommendation.market_id == market,
         (
-            (Recommendation.target_entity_type == 'Node') & 
-            (Recommendation.target_entity_id == node.id)
-        ) | (
-            (Recommendation.target_entity_type == 'Customer') & 
-            (Recommendation.target_entity_id == customer.id)
+            ((Recommendation.target_entity_type == 'Node') & (Recommendation.target_entity_id == node.id)) |
+            ((Recommendation.target_entity_type == 'Customer') & (Recommendation.target_entity_id == customer.id))
         )
     ).order_by(Recommendation.created_at.desc()).all()
 
-    # 7. Fetch related audit logs
+    # 7. Fetch related audit logs scoped to market
     audits = db.query(AuditLog).filter(
+        AuditLog.market_id == market,
         AuditLog.source_module.in_([
             "Predictive Service Assurance",
             "Churn Prediction & Retention AI",
             "Intelligent Customer Journeys"
         ])
     ).order_by(AuditLog.timestamp.desc()).limit(10).all()
+
+    tech_name = "Suresh Sawant (Mumbai Unit)" if market == "mumbai" else "Debabrata Mukherjee (Kolkata Unit)"
 
     # 8. Build 6-step operating loop trace
     trace_steps = [
@@ -128,7 +133,7 @@ def get_pilot_bundle_scenario(
             primary_metric=f"{node.optical_power_dbm} dBm",
             primary_metric_label="Optical Power",
             confidence_score=0.96,
-            description=f"Physical telemetry monitors optical power attenuation (-29.8 dBm vs nominal -19 dBm) and backhaul saturation ({node.utilization_pct}%) on OLT port.",
+            description=f"Physical telemetry monitors optical power attenuation ({node.optical_power_dbm} dBm vs nominal -19 dBm) and backhaul saturation ({node.utilization_pct}%) on OLT port.",
             entity_label=f"{node.node_name} ({node.node_code})",
             signals=[
                 {"signal": "Optical Power", "value": f"{node.optical_power_dbm} dBm", "detail": "High optical attenuation on feeder fiber"},
@@ -144,55 +149,65 @@ def get_pilot_bundle_scenario(
             step_number=2,
             loop_phase="Predict",
             module_name="Churn Prediction & Retention AI",
-            title=f"Subscriber Churn Risk Escalation - {customer.name}",
-            subtitle=f"Downstream Impact Correlation ({customer.locality})",
-            status="Scored",
-            primary_metric=f"{score:.1f}%",
-            primary_metric_label="Churn Risk Score",
-            confidence_score=0.93,
-            description=f"AI model correlates physical node degradation to downstream subscriber complaints (3 outages) and 42% bandwidth drop, triggering High Churn Risk.",
+            title=f"Cascading Churn Propensity: {customer.name}",
+            subtitle=f"{customer.segment} ({customer.locality})",
+            status="Alert Active",
+            primary_metric=f"{churn_pred.churn_risk_score:.0f}%",
+            primary_metric_label="Churn Risk",
+            confidence_score=churn_pred.confidence_score,
+            description=f"Subscriber {customer.name} experienced repeat speed/outage tickets downstream of degraded hub {node.node_name}. Churn risk jumped to {churn_pred.churn_risk_score:.0f}%.",
             entity_label=f"{customer.name} ({customer.customer_code})",
-            signals=[s.model_dump() for s in factors],
+            signals=[
+                {"factor": "Repeat Outage Incident", "weight": "+30 pts", "detail": f"Correlated with {node.node_code} optical degradation"},
+                {"factor": "Bandwidth Usage Drop", "weight": "+25 pts", "detail": "Consumption declined over 35% vs baseline quota"},
+                {"factor": "Enterprise SLA Exposure", "weight": "+20 pts", "detail": "Risk of high contractual billing penalty"}
+            ],
             actions_available=[
-                {"label": "View Customer 360", "action": "open_360"}
+                {"label": "Review Subscriber 360", "action": "view_customer360"},
+                {"label": "Evaluate Retention Pack", "action": "eval_save_offer"}
             ]
         ),
         PilotBundleTraceStep(
             step_number=3,
             loop_phase="Recommend",
             module_name="Intelligent Customer Journeys",
-            title="Next-Best-Action & Retention Save Proposal",
-            subtitle=f"Lifecycle Stage: {matched_journey.current_stage}",
-            status="Queued",
-            primary_metric=matched_journey.suggested_channel,
-            primary_metric_label="Target Channel",
-            confidence_score=matched_journey.confidence_score,
-            description=f"Journey engine matches subscriber complaint stage with proactive Next-Best-Action: {matched_journey.next_best_action}. Reason: {matched_journey.action_reason}",
-            entity_label=f"NBA: {matched_journey.next_best_action[:45]}...",
-            signals=[s.model_dump() for s in matched_journey.contributing_signals],
+            title="Next-Best-Action Save Proposition",
+            subtitle="Automated Retention Package",
+            status="Recommended",
+            primary_metric="84%",
+            primary_metric_label="Save Probability",
+            confidence_score=0.91,
+            description=f"AI Journey Engine generates automated retention plan: {churn_pred.suggested_retention_action}.",
+            entity_label=f"{customer.plan_name} Renewal",
+            signals=[
+                {"proposal": "Proactive Validity Extension", "detail": "3-day buffer to prevent automatic expiry churn"},
+                {"proposal": "Speed Boost Voucher", "detail": "Temporary upgrade to compensate for service interruption"},
+                {"proposal": "WhatsApp 1-Click Link", "detail": "Personalized renewal link with 20% concession"}
+            ],
             actions_available=[
-                {"label": "Propose to Governance Queue", "action": "propose_nba"}
+                {"label": "Preview WhatsApp Template", "action": "preview_wa"},
+                {"label": "Customize Concession", "action": "custom_discount"}
             ]
         ),
         PilotBundleTraceStep(
             step_number=4,
             loop_phase="Approve",
             module_name="Human-in-the-Loop AI Governance",
-            title="Centralized Human Sign-Off Console",
-            subtitle="Dual-domain authorization required",
-            status="Queued",
-            primary_metric="2 Actions",
+            title="Consolidated Multi-Domain Approval",
+            subtitle="Dual Sign-off (NOC + Care)",
+            status="Pending",
+            primary_metric="2 Sign-offs",
             primary_metric_label="Pending Review",
             confidence_score=0.95,
-            description="Both the physical field dispatch order (NOC domain) and the proactive customer retention save offer (Care domain) converge into the central governance queue before simulated execution.",
-            entity_label="Queue ID #PSA-1 & #ICJ-2",
+            description=f"Two AI proposals staged: (1) NOC Lead approval for {node.node_name} field technician calibration, (2) Care Lead approval for {customer.name} retention package.",
+            entity_label="Multi-Agent Governance Gate",
             signals=[
-                {"domain": "NOC Sign-off", "target": node.node_name, "action": "Emergency Splicing Dispatch"},
-                {"domain": "Care Sign-off", "target": customer.name, "action": "Proactive SLA Credit & Save Offer"}
+                {"domain": "NOC Engineering", "action": f"Field dispatch to {node.node_name}", "auth_role": "NOC"},
+                {"domain": "Customer Care", "action": f"Retention offer for {customer.name}", "auth_role": "Care"}
             ],
             actions_available=[
-                {"label": "Approve Field Dispatch", "action": "approve_assurance"},
-                {"label": "Approve Customer Save", "action": "approve_journey"}
+                {"label": "Approve All Actions (1-Click)", "action": "approve_all"},
+                {"label": "Inspect Explainability Factors", "action": "inspect_shap"}
             ]
         ),
         PilotBundleTraceStep(
@@ -200,21 +215,21 @@ def get_pilot_bundle_scenario(
             loop_phase="Execute",
             module_name="AI-driven OSS/BSS Orchestration",
             title="Simulated Downstream Execution",
-            subtitle="Field Order #FDO-2026-981 & WhatsApp API",
+            subtitle=f"Field Order #FDO-2026-981 & WhatsApp API",
             status="Executed",
             primary_metric="< 4.2s",
             primary_metric_label="Execution Latency",
             confidence_score=0.98,
-            description="Upon human sign-off, the governance console executes simulated workflows: automated field technician dispatch to Bandra Hub and WhatsApp voucher delivery.",
+            description=f"Upon human sign-off, the governance console executes simulated workflows: automated field technician dispatch to {node.area} and WhatsApp voucher delivery.",
             entity_label="Dispatched to Field & WhatsApp Delivered",
             signals=[
-                {"system": "Field Service", "status": "Work order #FDO-981 dispatched to Bandra team"},
+                {"system": "Field Service", "status": f"Work order dispatched to {node.area} team"},
                 {"system": "WhatsApp Business API", "status": "Interactive message delivered with 1-click accept"},
                 {"system": "SAP BRIM Billing", "status": "INR 250 downtime credit queued"}
             ],
             execution_receipt={
                 "dispatch_id": "FDO-2026-981",
-                "technician": "Suresh Sawant (Bandra Unit)",
+                "technician": tech_name,
                 "channel_receipt": "WA-MSG-2026-8819",
                 "execution_time_seconds": 3.8
             }
@@ -229,7 +244,7 @@ def get_pilot_bundle_scenario(
             primary_metric="+2 NPS",
             primary_metric_label="Subscriber Recovery",
             confidence_score=0.99,
-            description="Immutable audit log recorded with reviewer identity, timestamp, and model confidence. Optical power restored to -21 dBm; subscriber NPS improved from 3 to 7.",
+            description=f"Immutable audit log recorded with reviewer identity, timestamp, and model confidence. Optical power restored on {node.node_code}; subscriber NPS recovered.",
             entity_label="Audit Event #AUDIT-2026-09",
             signals=[
                 {"metric": "Node Health", "before": "38.0 (Critical)", "after": "92.5 (Healthy)"},
@@ -245,9 +260,9 @@ def get_pilot_bundle_scenario(
     ]
 
     return PilotBundleScenarioResponse(
-        scenario_id="scenario-bandra-cascading-churn",
-        scenario_title="Bandra West Optical Degradation Cascading to VIP Churn & SLA Complaint",
-        scenario_summary="End-to-end operating loop demonstrating how PMRG Governed AI correlates physical layer optical attenuation on OLT-BND-01 to downstream subscriber churn risk, triggers proactive Next-Best-Action, routes both to the centralized Approval Console, and records an immutable audit trail.",
+        scenario_id=f"scenario-{market}-cascading-churn",
+        scenario_title=f"{node.area} Optical Degradation Cascading to VIP Churn & SLA Complaint",
+        scenario_summary=f"End-to-end operating loop demonstrating how SentinelOS Governed AI correlates physical layer optical attenuation on {node.node_code} to downstream subscriber churn risk, triggers proactive Next-Best-Action, routes both to the centralized Approval Console, and records an immutable audit trail.",
         node=NodeResponse.model_validate(node),
         impacted_customer=CustomerListResponse.model_validate(customer),
         churn_prediction=churn_pred,

@@ -5,6 +5,7 @@ from app.database import engine, Base
 from app.routers import (
     auth, customers, assurance, churn, journeys, orchestration, revenue, governance, cockpit, pilot_bundle
 )
+from app import markets
 
 # Create database tables
 Base.metadata.create_all(bind=engine)
@@ -12,9 +13,10 @@ Base.metadata.create_all(bind=engine)
 app = FastAPI(
     title=settings.PROJECT_NAME,
     description="""
-    ### PMRG Solution AI Overlay for PMRG Internet (Mumbai ISP)
+    ### SentinelOS — Governed AI Overlay (PMRG Solution LLP)
     A governed AI intelligence layer connecting **Network -> Customer -> OSS/BSS -> Operations -> Revenue**
     through the repeatable loop: **Observe -> Predict -> Recommend -> Approve -> Execute -> Learn**.
+    Supports isolated regional market telemetry (Mumbai & Kolkata).
     """,
     version="1.0.0",
     docs_url="/docs",
@@ -33,6 +35,7 @@ app.add_middleware(
 
 # Include API Routers
 app.include_router(auth.router, prefix=settings.API_V1_STR)
+app.include_router(markets.router, prefix=settings.API_V1_STR)
 app.include_router(cockpit.router, prefix=settings.API_V1_STR)
 app.include_router(customers.router, prefix=settings.API_V1_STR)
 app.include_router(assurance.router, prefix=settings.API_V1_STR)

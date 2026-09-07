@@ -153,7 +153,7 @@ def test_pilot_bundle_scenario():
     scenario_res = client.get("/api/pilot-bundle/scenario?node_code=OLT-BND-01", headers=headers)
     assert scenario_res.status_code == 200
     scenario = scenario_res.json()
-    assert scenario["scenario_id"] == "scenario-bandra-cascading-churn"
+    assert scenario["scenario_id"] == "scenario-mumbai-cascading-churn"
     assert scenario["node"]["node_code"] == "OLT-BND-01"
     assert scenario["impacted_customer"]["id"] > 0
     assert len(scenario["trace_steps"]) == 6
@@ -205,6 +205,58 @@ def test_rbac_and_governance_matrix():
     assert latest_audit["user_role"] == "Care"
     assert latest_audit["decision"] == "APPROVED"
 
+def test_dual_market_isolation_and_governance():
+    admin_res = client.post("/api/auth/demo-login/Admin")
+    admin_token = admin_res.json()["access_token"]
+    
+    # 1. Market listing endpoint
+    markets_res = client.get("/api/markets")
+    assert markets_res.status_code == 200
+    markets = markets_res.json()
+    market_ids = [m["id"] for m in markets]
+    assert "mumbai" in market_ids
+    assert "kolkata" in market_ids
+
+    # 2. Mumbai market scoping
+    mumbai_headers = {"Authorization": f"Bearer {admin_token}", "X-Market-Id": "mumbai"}
+    mumbai_nodes = client.get("/api/assurance/predictions", headers=mumbai_headers).json()
+    assert len(mumbai_nodes) == 12
+    mumbai_node_codes = [n["node_code"] for n in mumbai_nodes]
+    assert any("BND" in c for c in mumbai_node_codes), "Bandra West node must be in Mumbai"
+    assert not any("SLK" in c for c in mumbai_node_codes), "Salt Lake node must NOT be in Mumbai"
+
+    # 3. Kolkata market scoping
+    kolkata_headers = {"Authorization": f"Bearer {admin_token}", "X-Market-Id": "kolkata"}
+    kolkata_nodes = client.get("/api/assurance/predictions", headers=kolkata_headers).json()
+    assert len(kolkata_nodes) == 12
+    kolkata_node_codes = [n["node_code"] for n in kolkata_nodes]
+    assert any("SLK" in c for c in kolkata_node_codes), "Salt Lake node must be in Kolkata"
+    assert not any("BND" in c for c in kolkata_node_codes), "Bandra node must NOT be in Kolkata"
+
+    # 4. Scoped cockpit summary
+    mumbai_cockpit = client.get("/api/cockpit/summary", headers=mumbai_headers).json()
+    kolkata_cockpit = client.get("/api/cockpit/summary", headers=kolkata_headers).json()
+    mumbai_total = mumbai_cockpit["kpis"]["prepaid_subscribers_count"] + mumbai_cockpit["kpis"]["postpaid_subscribers_count"]
+    kolkata_total = kolkata_cockpit["kpis"]["prepaid_subscribers_count"] + kolkata_cockpit["kpis"]["postpaid_subscribers_count"]
+    assert mumbai_total == 1000
+    assert kolkata_total == 1000
+    mumbai_localities = [r["locality"] for r in mumbai_cockpit["locality_risk_distribution"]]
+    kolkata_localities = [r["locality"] for r in kolkata_cockpit["locality_risk_distribution"]]
+    assert "Bandra West" in mumbai_localities
+    assert "Salt Lake Sector V" in kolkata_localities
+
+    # 5. Pilot bundle auto-resolution
+    mumbai_pilot = client.get("/api/pilot-bundle/scenario", headers=mumbai_headers).json()
+    assert mumbai_pilot["node"]["node_code"] == "OLT-BND-01"
+    kolkata_pilot = client.get("/api/pilot-bundle/scenario", headers=kolkata_headers).json()
+    assert kolkata_pilot["node"]["node_code"] == "OLT-SLK-01"
+
+    # 6. Brand sanitization verification
+    for payload in [mumbai_cockpit, kolkata_cockpit, mumbai_pilot, kolkata_pilot]:
+        payload_str = str(payload).lower()
+        assert "jeebr" not in payload_str, "Client name 'jeebr' found in API response!"
+        assert "meghbela" not in payload_str, "Client name 'meghbela' found in API response!"
+
 if __name__ == "__main__":
     print("Running updated comprehensive test suite...")
     test_health()
@@ -217,5 +269,8 @@ if __name__ == "__main__":
     print("[PASS] Pilot Bundle Connected E2E Trace Scenario")
     test_rbac_and_governance_matrix()
     print("[PASS] Governance RBAC Permissions Matrix & Audit Trail Execution")
+    test_dual_market_isolation_and_governance()
+    print("[PASS] Dual Market Isolation (Mumbai / Kolkata) & Brand Integrity")
     print("ALL TESTS PASSED WITH 100% SUCCESS!")
+
 

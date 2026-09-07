@@ -5,6 +5,7 @@ from app.database import get_db
 from app.models import Customer, Node, Ticket, Invoice, Recommendation, AuditLog, User
 from app.schemas import CockpitSummaryResponse, CockpitKPISummary, ModuleHealthStatus, AuditLogResponse
 from app.auth import get_current_user
+from app.markets import get_current_market, MARKETS
 from app.services.churn_engine import get_at_risk_customers
 from app.services.assurance_engine import evaluate_node_degradations
 
@@ -13,28 +14,43 @@ router = APIRouter(prefix="/cockpit", tags=["Executive Cockpit"])
 @router.get("/summary", response_model=CockpitSummaryResponse)
 def get_cockpit_summary(
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user)
+    current_user: User = Depends(get_current_user),
+    market: str = Depends(get_current_market)
 ):
-    total_custs = db.query(Customer).count()
-    active_custs = db.query(Customer).filter(Customer.status == 'Active').count()
+    total_custs = db.query(Customer).filter(Customer.market_id == market).count()
+    active_custs = db.query(Customer).filter(Customer.status == 'Active', Customer.market_id == market).count()
     
-    at_risk_list = get_at_risk_customers(db, min_score=40.0)
+    at_risk_list = get_at_risk_customers(db, min_score=40.0, market_id=market)
     total_at_risk = len(at_risk_list)
     at_risk_monthly_rev = sum(c.arpu for c in at_risk_list)
 
-    node_preds = evaluate_node_degradations(db)
+    node_preds = evaluate_node_degradations(db, market_id=market)
     degraded_nodes = [n for n in node_preds if n.degradation_risk_score >= 35.0]
     degraded_node_count = len(degraded_nodes)
     impacted_cust_count = sum(n.impacted_customers_count for n in degraded_nodes)
 
-    leakage_sum = db.query(func.sum(Invoice.leakage_amount)).filter(Invoice.anomaly_flag == True).scalar() or 0.0
-    open_tickets = db.query(Ticket).filter(Ticket.status.in_(['Open', 'In-Progress'])).count()
-    pending_recs = db.query(Recommendation).filter(Recommendation.status == 'PENDING').count()
-    approved_recs = db.query(Recommendation).filter(Recommendation.status.in_(['APPROVED', 'EXECUTED'])).count()
+    leakage_sum = db.query(func.sum(Invoice.leakage_amount)).filter(
+        Invoice.anomaly_flag == True,
+        Invoice.market_id == market
+    ).scalar() or 0.0
+    open_tickets = db.query(Ticket).filter(
+        Ticket.status.in_(['Open', 'In-Progress']),
+        Ticket.market_id == market
+    ).count()
+    pending_recs = db.query(Recommendation).filter(
+        Recommendation.status == 'PENDING',
+        Recommendation.market_id == market
+    ).count()
+    approved_recs = db.query(Recommendation).filter(
+        Recommendation.status.in_(['APPROVED', 'EXECUTED']),
+        Recommendation.market_id == market
+    ).count()
 
-    # Locality risk distribution
-    localities = ["Bandra West", "Andheri East", "BKC", "Powai", "Lower Parel", "Dadar", "Malad West", "Thane West"]
-    loc_counts_raw = db.query(Customer.locality, func.count(Customer.id)).group_by(Customer.locality).all()
+    # Locality risk distribution from current market config
+    localities = MARKETS.get(market, MARKETS["mumbai"]).localities
+    loc_counts_raw = db.query(Customer.locality, func.count(Customer.id)).filter(
+        Customer.market_id == market
+    ).group_by(Customer.locality).all()
     loc_counts = {loc: count for loc, count in loc_counts_raw}
     
     loc_dist = []
@@ -57,12 +73,18 @@ def get_cockpit_summary(
     ]
 
     # Prepaid vs Postpaid metrics & Aggregate ARPU calculations
-    prepaid_count = db.query(Customer).filter(Customer.customer_type == 'Prepaid').count()
-    postpaid_count = db.query(Customer).filter(Customer.customer_type == 'Postpaid').count()
+    prepaid_count = db.query(Customer).filter(Customer.customer_type == 'Prepaid', Customer.market_id == market).count()
+    postpaid_count = db.query(Customer).filter(Customer.customer_type == 'Postpaid', Customer.market_id == market).count()
 
     # Aggregate Revenue during the period (Sum of 30-day recognized customer revenues)
-    prepaid_revenue_30d = db.query(func.sum(Customer.actual_arpu)).filter(Customer.customer_type == 'Prepaid').scalar() or 0.0
-    postpaid_revenue_30d = db.query(func.sum(Customer.actual_arpu)).filter(Customer.customer_type == 'Postpaid').scalar() or 0.0
+    prepaid_revenue_30d = db.query(func.sum(Customer.actual_arpu)).filter(
+        Customer.customer_type == 'Prepaid',
+        Customer.market_id == market
+    ).scalar() or 0.0
+    postpaid_revenue_30d = db.query(func.sum(Customer.actual_arpu)).filter(
+        Customer.customer_type == 'Postpaid',
+        Customer.market_id == market
+    ).scalar() or 0.0
     total_monthly_revenue = prepaid_revenue_30d + postpaid_revenue_30d
 
     # Aggregate business-level ARPU: Total Revenue during the period ÷ Active/Total Subscribers
@@ -84,7 +106,10 @@ def get_cockpit_summary(
         Invoice.anomaly_type,
         func.sum(Invoice.leakage_amount),
         func.count(Invoice.id)
-    ).filter(Invoice.anomaly_flag == True).group_by(Invoice.anomaly_type).all()
+    ).filter(
+        Invoice.anomaly_flag == True,
+        Invoice.market_id == market
+    ).group_by(Invoice.anomaly_type).all()
     
     leakage_stats = {
         row[0]: {"amount": row[1] or 0.0, "count": row[2] or 0}
@@ -107,8 +132,8 @@ def get_cockpit_summary(
         ModuleHealthStatus(module_name="Human-in-the-Loop AI Governance", status="Active (Governed)", active_alerts=pending_recs, confidence_avg=0.99),
     ]
 
-    # Recent audits
-    audits = db.query(AuditLog).order_by(AuditLog.timestamp.desc()).limit(8).all()
+    # Recent audits scoped to market
+    audits = db.query(AuditLog).filter(AuditLog.market_id == market).order_by(AuditLog.timestamp.desc()).limit(8).all()
     audit_res = [AuditLogResponse.model_validate(a) for a in audits]
 
     kpis = CockpitKPISummary(

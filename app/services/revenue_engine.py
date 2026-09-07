@@ -121,19 +121,26 @@ def evaluate_invoice_signals(inv: Invoice) -> Tuple[float, str, float, List[Cont
 def evaluate_invoice_anomaly(inv: Invoice, db: Session) -> Tuple[float, str, float, List[ContributingSignal], str, str]:
     return evaluate_invoice_signals(inv)
 
-def detect_revenue_leakages(db: Session) -> List[RevenueLeakageItem]:
-    invoices = db.query(Invoice).filter(Invoice.anomaly_flag == True).all()
+def detect_revenue_leakages(db: Session, market_id: str = "mumbai") -> List[RevenueLeakageItem]:
+    invoices = db.query(Invoice).filter(
+        Invoice.anomaly_flag == True,
+        Invoice.market_id == market_id
+    ).all()
     if not invoices:
         return []
 
     cust_ids = {inv.customer_id for inv in invoices if inv.customer_id}
-    customers = {c.id: c for c in db.query(Customer).filter(Customer.id.in_(cust_ids)).all()} if cust_ids else {}
+    customers = {c.id: c for c in db.query(Customer).filter(
+        Customer.id.in_(cust_ids),
+        Customer.market_id == market_id
+    ).all()} if cust_ids else {}
 
     pending_rec_inv_ids = {
         r.target_entity_id for r in db.query(Recommendation.target_entity_id).filter(
             Recommendation.source_module == 'Revenue Assurance & Leakage Analytics',
             Recommendation.target_entity_type == 'Invoice',
-            Recommendation.status == 'PENDING'
+            Recommendation.status == 'PENDING',
+            Recommendation.market_id == market_id
         ).all()
     }
 
@@ -141,7 +148,7 @@ def detect_revenue_leakages(db: Session) -> List[RevenueLeakageItem]:
     for inv in invoices:
         cust = customers.get(inv.customer_id)
         cust_name = cust.name if cust else "Unknown Customer"
-        locality = cust.locality if cust else "Mumbai"
+        locality = cust.locality if cust else "Regional"
         segment = cust.segment if cust else "Home Broadband"
 
         score, risk_lvl, conf, factors, desc, action = evaluate_invoice_signals(inv)

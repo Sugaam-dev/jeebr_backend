@@ -5,6 +5,7 @@ from app.database import get_db
 from app.models import Invoice, User
 from app.schemas import RevenueLeakageItem, RecommendRevenueRequest, RecommendationResponse
 from app.auth import get_current_user, require_roles
+from app.markets import get_current_market
 from app.services.revenue_engine import detect_revenue_leakages
 from app.services.governance_service import create_or_get_recommendation
 
@@ -13,21 +14,23 @@ router = APIRouter(prefix="/revenue", tags=["Revenue Assurance & Leakage Analyti
 @router.get("/leakages", response_model=List[RevenueLeakageItem])
 def get_revenue_leakages(
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user)
+    current_user: User = Depends(get_current_user),
+    market: str = Depends(get_current_market)
 ):
-    return detect_revenue_leakages(db)
+    return detect_revenue_leakages(db, market_id=market)
 
 @router.post("/recommend", response_model=RecommendationResponse)
 def propose_revenue_remediation(
     req: RecommendRevenueRequest,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user)
+    current_user: User = Depends(get_current_user),
+    market: str = Depends(get_current_market)
 ):
     invoice = db.query(Invoice).filter(Invoice.id == req.invoice_id).first()
     if not invoice:
         raise HTTPException(status_code=404, detail="Invoice not found")
 
-    items = detect_revenue_leakages(db)
+    items = detect_revenue_leakages(db, market_id=invoice.market_id or market)
     matched = next((i for i in items if i.invoice_id == invoice.id), None)
     
     action_text = req.remediation_action or (matched.recommended_action if matched else "Audit and reconcile ledger")
@@ -43,6 +46,7 @@ def propose_revenue_remediation(
         description=f"{matched.description if matched else 'Billing anomaly'}. Action: {action_text}",
         recommended_action=action_text,
         confidence_score=confidence,
+        market_id=invoice.market_id or market,
         action_payload={
             "invoice_code": invoice.invoice_code,
             "anomaly_type": invoice.anomaly_type,
