@@ -7,6 +7,92 @@ from app.models import Ticket, Resource, Customer, Node, User, AuditLog, Recomme
 from app.schemas import TicketCreateRequest, TicketDetailResponse, TicketingStatsResponse
 from app.services.voice_alert_service import dispatch_voice_alert_for_ticket
 
+# Global / market-level toggle state for Autonomous P3/P4 Auto-Dispatch (POC demo mode starts OFF so pending tickets are visible)
+AUTO_DISPATCH_P3_P4_ENABLED: Dict[str, bool] = {
+    "mumbai": False,
+    "kolkata": False
+}
+
+
+def get_auto_dispatch_p3_p4_status(db: Session, market_id: str = "mumbai") -> Dict[str, Any]:
+    """Get current status of autonomous P3/P4 dispatch toggle and pending count."""
+    enabled = AUTO_DISPATCH_P3_P4_ENABLED.get(market_id, False)
+    unassigned_count = db.query(Ticket).filter(
+        Ticket.market_id == market_id,
+        Ticket.priority.in_(["P3", "P4"]),
+        Ticket.assigned_resource_id.is_(None),
+        Ticket.status.notin_(["Resolved", "Closed", "Rejected"])
+    ).count()
+    return {
+        "enabled": enabled,
+        "unassigned_p3_p4_count": unassigned_count,
+        "market": market_id
+    }
+
+
+def auto_dispatch_unassigned_p3_p4_tickets(db: Session, market_id: str = "mumbai") -> List[Ticket]:
+    """
+    Finds all unassigned P3 & P4 tickets/alerts in the market and auto-assigns them
+    to optimal regional field engineers immediately with zero human authorization.
+    """
+    tickets = db.query(Ticket).filter(
+        Ticket.market_id == market_id,
+        Ticket.priority.in_(["P3", "P4"]),
+        Ticket.assigned_resource_id.is_(None),
+        Ticket.status.notin_(["Resolved", "Closed", "Rejected"])
+    ).all()
+
+    dispatched = []
+    for t in tickets:
+        if t.source == "INTERNAL":
+            res = find_best_internal_resource(db, market_id)
+        else:
+            res = find_best_regional_resource(db, market_id, t.region)
+
+        if res:
+            t.assigned_resource_id = res.id
+            t.assigned_at = datetime.utcnow()
+            t.approval_status = "NOT_REQUIRED"
+            t.status = "Assigned"
+            res.active_tickets_count += 1
+            t.ai_triage_action = f"Auto-assigned ({t.priority} Zero-Touch) to {res.name} ({res.region})"[:100]
+            dispatched.append(t)
+        else:
+            t.ai_triage_action = "Queued for regional field dispatch (High Capacity Load)"
+
+    if dispatched:
+        db.commit()
+        for t in dispatched:
+            db.refresh(t)
+
+    return dispatched
+
+
+def set_auto_dispatch_p3_p4(db: Session, market_id: str, enabled: bool) -> Dict[str, Any]:
+    """
+    Updates the P3/P4 auto-dispatch toggle.
+    When switched to True, automatically dispatches all pending P3/P4 tickets without authorization!
+    """
+    AUTO_DISPATCH_P3_P4_ENABLED[market_id] = enabled
+    dispatched_tickets = []
+    if enabled:
+        dispatched_tickets = auto_dispatch_unassigned_p3_p4_tickets(db, market_id=market_id)
+
+    unassigned_count = db.query(Ticket).filter(
+        Ticket.market_id == market_id,
+        Ticket.priority.in_(["P3", "P4"]),
+        Ticket.assigned_resource_id.is_(None),
+        Ticket.status.notin_(["Resolved", "Closed", "Rejected"])
+    ).count()
+
+    return {
+        "enabled": enabled,
+        "unassigned_p3_p4_count": unassigned_count,
+        "market": market_id,
+        "dispatched_count": len(dispatched_tickets),
+        "dispatched_ticket_codes": [t.ticket_code for t in dispatched_tickets]
+    }
+
 
 def normalize_priority(priority: str) -> str:
     """Normalize priority strings to P1, P2, P3, P4."""
@@ -156,20 +242,27 @@ def create_and_dispatch_ticket(
 
     # 2. Regional / Customer Ticket
     else:
-        # P3 or P4 -> Auto-assign without approval to regional resource
+        # P3 or P4 -> Auto-assign without approval to regional resource (if autonomous mode is ON)
         if p_norm in ["P3", "P4"]:
-            assigned_res = find_best_regional_resource(db, market_id, region)
-            if assigned_res:
-                ticket.assigned_resource_id = assigned_res.id
-                ticket.assigned_at = datetime.utcnow()
-                ticket.approval_status = "NOT_REQUIRED"
-                ticket.status = "Assigned"
-                assigned_res.active_tickets_count += 1
-                ticket.ai_triage_action = f"Auto-assigned ({p_norm} Zero-Touch) to {assigned_res.region} field engineer {assigned_res.name}"
+            is_auto_dispatch_on = AUTO_DISPATCH_P3_P4_ENABLED.get(market_id, False)
+            if is_auto_dispatch_on:
+                assigned_res = find_best_regional_resource(db, market_id, region)
+                if assigned_res:
+                    ticket.assigned_resource_id = assigned_res.id
+                    ticket.assigned_at = datetime.utcnow()
+                    ticket.approval_status = "NOT_REQUIRED"
+                    ticket.status = "Assigned"
+                    assigned_res.active_tickets_count += 1
+                    ticket.ai_triage_action = f"Auto-assigned ({p_norm} Zero-Touch) to {assigned_res.name} ({assigned_res.region})"[:100]
+                else:
+                    ticket.approval_status = "NOT_REQUIRED"
+                    ticket.status = "Open"
+                    ticket.ai_triage_action = "Queued for regional field dispatch"
             else:
+                ticket.assigned_resource_id = None
                 ticket.approval_status = "NOT_REQUIRED"
                 ticket.status = "Open"
-                ticket.ai_triage_action = "Queued for regional field dispatch"
+                ticket.ai_triage_action = f"Pending Dispatch ({p_norm} Auto-Dispatch Paused)"[:100]
 
         # P1 or P2 -> Requires approval before assignment
         else:
@@ -458,3 +551,110 @@ def get_ticketing_stats(db: Session, market_id: str) -> TicketingStatsResponse:
         total_resources=total_res or 0,
         available_resources=avail_res or 0
     )
+
+
+def simulate_ai_predicted_p3_p4_ticket(
+    db: Session,
+    market_id: str = "mumbai",
+    priority: str = "P3",
+    category: Optional[str] = "Optical Telemetry",
+    description: Optional[str] = None,
+    region: Optional[str] = None
+) -> Ticket:
+    """
+    Simulate an incoming AI-predicted incident / alert for POC demonstration.
+    Demonstrates instant auto-dispatch when toggle is ON, or queuing when toggle is OFF.
+    """
+    p_norm = normalize_priority(priority)
+    if p_norm not in ["P3", "P4"]:
+        p_norm = "P3"
+
+    chosen_region = region
+    node_id = None
+    if not chosen_region:
+        node = db.query(Node).filter(Node.market_id == market_id).first()
+        if node:
+            chosen_region = node.area
+            node_id = node.id
+        else:
+            chosen_region = "Bandra West" if market_id == "mumbai" else "Park Street"
+    else:
+        node = db.query(Node).filter(Node.market_id == market_id, Node.area.ilike(f"%{chosen_region}%")).first()
+        if node:
+            node_id = node.id
+
+    customer = db.query(Customer).filter(
+        Customer.market_id == market_id,
+        Customer.locality.ilike(f"%{chosen_region}%")
+    ).first()
+    customer_id = customer.id if customer else None
+
+    if not description:
+        if category == "Optical Telemetry":
+            desc = f"AI Optical Telemetry Alert: Attenuation spike (-25.8 dBm) flagged on regional line in {chosen_region}. Preventive calibration required."
+        elif category == "Speed":
+            desc = f"AI Traffic Saturation Alert: PON buffer latency elevation (84.5% load) in {chosen_region}. Proactive line dispatch recommended."
+        else:
+            desc = f"AI Proactive Prediction ({p_norm}): Anomaly threshold exceeded in {chosen_region}. Automated dispatch recommended."
+    else:
+        desc = description
+
+    req = TicketCreateRequest(
+        source="CUSTOMER",
+        category=category or "Optical Telemetry",
+        priority=p_norm,
+        description=desc,
+        region=chosen_region,
+        customer_id=customer_id,
+        node_id=node_id
+    )
+    return create_and_dispatch_ticket(db, req, market_id=market_id)
+
+
+def reset_p3_p4_demo_state(db: Session, market_id: str = "mumbai", unassign_count: int = 6) -> Dict[str, Any]:
+    """
+    Resets the POC demo state for client demonstrations:
+    1. Turns OFF the auto-dispatch toggle for this market.
+    2. Unassigns a batch of P3/P4 tickets (setting status='Open', assigned_resource_id=None).
+    3. Decrements the active ticket count on the freed resources.
+    4. Returns updated toggle status and count.
+    """
+    AUTO_DISPATCH_P3_P4_ENABLED[market_id] = False
+
+    # Find active assigned P3/P4 tickets to unassign
+    assigned_p34 = db.query(Ticket).filter(
+        Ticket.market_id == market_id,
+        Ticket.priority.in_(["P3", "P4"]),
+        Ticket.status == "Assigned",
+        Ticket.assigned_resource_id.isnot(None)
+    ).order_by(Ticket.id.desc()).limit(unassign_count).all()
+
+    for t in assigned_p34:
+        if t.assigned_resource_id:
+            res = db.query(Resource).filter(Resource.id == t.assigned_resource_id).first()
+            if res and res.active_tickets_count > 0:
+                res.active_tickets_count -= 1
+                if res.status == 'Busy' and res.active_tickets_count < res.max_capacity:
+                    res.status = 'Available'
+        t.assigned_resource_id = None
+        t.assigned_at = None
+        t.status = "Open"
+        t.approval_status = "NOT_REQUIRED"
+        t.ai_triage_action = f"Pending Dispatch ({t.priority} Auto-Dispatch Paused)"
+
+    db.commit()
+
+    unassigned_count = db.query(Ticket).filter(
+        Ticket.market_id == market_id,
+        Ticket.priority.in_(["P3", "P4"]),
+        Ticket.assigned_resource_id.is_(None),
+        Ticket.status.notin_(["Resolved", "Closed", "Rejected"])
+    ).count()
+
+    return {
+        "enabled": False,
+        "unassigned_p3_p4_count": unassigned_count,
+        "market": market_id,
+        "dispatched_count": 0,
+        "dispatched_ticket_codes": []
+    }

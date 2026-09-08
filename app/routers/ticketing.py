@@ -8,7 +8,8 @@ from app.schemas import (
     TicketCreateRequest, TicketDetailResponse, TicketApproveRequest,
     TicketRejectRequest, TicketResolveRequest, ResourceCreate, ResourceResponse,
     TicketingStatsResponse, ResourceTimelineResponse, ResourceTimelineItem,
-    ApprovalCallLogResponse
+    ApprovalCallLogResponse, AutoDispatchToggleRequest, AutoDispatchStatusResponse,
+    SimulateAiAlertRequest
 )
 from app.auth import get_current_user, require_roles
 from app.markets import get_current_market
@@ -18,7 +19,12 @@ from app.services.ticketing_engine import (
     reject_ticket,
     resolve_ticket,
     build_ticket_detail_response,
-    get_ticketing_stats
+    get_ticketing_stats,
+    get_auto_dispatch_p3_p4_status,
+    set_auto_dispatch_p3_p4,
+    auto_dispatch_unassigned_p3_p4_tickets,
+    simulate_ai_predicted_p3_p4_ticket,
+    reset_p3_p4_demo_state
 )
 from app.services.voice_alert_service import (
     get_ticket_call_logs,
@@ -103,6 +109,84 @@ def get_stats(
 ):
     """Get aggregate ticketing & resource workload statistics."""
     return get_ticketing_stats(db, market_id=market)
+
+
+@router.get("/auto-dispatch-settings", response_model=AutoDispatchStatusResponse)
+def get_auto_dispatch_settings(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+    market: str = Depends(get_current_market)
+):
+    """Get current toggle status for P3/P4 Autonomous Auto-Dispatch in active market."""
+    return get_auto_dispatch_p3_p4_status(db, market_id=market)
+
+
+@router.post("/auto-dispatch-settings", response_model=AutoDispatchStatusResponse)
+def update_auto_dispatch_settings(
+    req: AutoDispatchToggleRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+    market: str = Depends(get_current_market)
+):
+    """
+    Toggle P3/P4 Autonomous Auto-Dispatch mode for active market.
+    When set to True: Automatically assigns all unassigned P3 & P4 tickets to regional resources immediately!
+    """
+    return set_auto_dispatch_p3_p4(db, market_id=market, enabled=req.enabled)
+
+
+@router.post("/auto-dispatch-now", response_model=AutoDispatchStatusResponse)
+def force_auto_dispatch_unassigned(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+    market: str = Depends(get_current_market)
+):
+    """Directly trigger batch auto-dispatch for all pending P3/P4 tickets in current market."""
+    dispatched = auto_dispatch_unassigned_p3_p4_tickets(db, market_id=market)
+    status = get_auto_dispatch_p3_p4_status(db, market_id=market)
+    status["dispatched_count"] = len(dispatched)
+    status["dispatched_ticket_codes"] = [t.ticket_code for t in dispatched]
+    return status
+
+
+@router.post("/simulate-ai-alert", response_model=TicketDetailResponse)
+def trigger_ai_predicted_alert(
+    req: SimulateAiAlertRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+    market: str = Depends(get_current_market)
+):
+    """
+    Simulate an incoming AI-predicted P3/P4 incident or telemetry alert.
+    If autonomous mode is ON, it will be automatically dispatched immediately!
+    If autonomous mode is OFF, it will wait as 'Pending Dispatch' to demonstrate the toggle effect.
+    """
+    try:
+        ticket = simulate_ai_predicted_p3_p4_ticket(
+            db=db,
+            market_id=market,
+            priority=req.priority or "P3",
+            category=req.category or "Optical Telemetry",
+            description=req.description,
+            region=req.region
+        )
+        return build_ticket_detail_response(ticket)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.post("/reset-demo-state", response_model=AutoDispatchStatusResponse)
+def reset_demo_state_endpoint(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+    market: str = Depends(get_current_market)
+):
+    """
+    Reset demo state for client demonstrations:
+    Turns OFF auto-dispatch, unassigns 6 P3/P4 tickets back to 'Pending Dispatch',
+    so the client demonstration can be replayed repeatedly.
+    """
+    return reset_p3_p4_demo_state(db, market_id=market, unassign_count=6)
 
 
 @router.get("/resources", response_model=List[ResourceResponse])

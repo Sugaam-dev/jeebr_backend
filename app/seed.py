@@ -395,22 +395,35 @@ def seed_market_dataset(db, market_id: str, users: list):
                 sla_dt = assigned_dt + timedelta(hours=random.randint(4, 12))
                 ai_action = f"Resolved by {field_res.name if field_res else 'field team'}"
             elif priority in ["P3", "P4"]:
-                # P3/P4: Auto-assign immediately without approval
-                t_status = "Assigned"
-                appr_status = "NOT_REQUIRED"
-                assigned_res_id = field_res.id if field_res else None
-                assigned_dt = datetime.utcnow() - timedelta(hours=random.randint(1, 12))
-                resolved_dt = None
-                appr_by_id = None
-                appr_dt = None
-                appr_notes = None
-                # Stagger SLA deadlines for active tickets
-                sla_offsets = [1.5, 3.5, 6.0]
-                offset_hrs = sla_offsets[res_active_count % len(sla_offsets)]
-                sla_dt = datetime.utcnow() + timedelta(hours=offset_hrs, minutes=random.randint(5, 30))
-                if field_res:
-                    field_res.active_tickets_count += 1
-                ai_action = f"Auto-assigned ({priority} Zero-Touch) to {field_res.region if field_res else 'regional'} engineer {field_res.name if field_res else 'On-Duty'}"
+                # For POC demonstration: Seed a clean batch of P3/P4 incidents in Open / Pending Dispatch
+                # so the toggle can be switched ON to watch them immediately auto-dispatch!
+                is_unassigned_demo = (len(tickets) % 4 == 0)
+                if is_unassigned_demo:
+                    t_status = "Open"
+                    appr_status = "NOT_REQUIRED"
+                    assigned_res_id = None
+                    assigned_dt = None
+                    resolved_dt = None
+                    appr_by_id = None
+                    appr_dt = None
+                    appr_notes = None
+                    sla_dt = datetime.utcnow() + timedelta(hours=8, minutes=random.randint(5, 30))
+                    ai_action = f"Pending Dispatch ({priority} Auto-Dispatch Paused)"
+                else:
+                    t_status = "Assigned"
+                    appr_status = "NOT_REQUIRED"
+                    assigned_res_id = field_res.id if field_res else None
+                    assigned_dt = datetime.utcnow() - timedelta(hours=random.randint(1, 12))
+                    resolved_dt = None
+                    appr_by_id = None
+                    appr_dt = None
+                    appr_notes = None
+                    sla_offsets = [1.5, 3.5, 6.0]
+                    offset_hrs = sla_offsets[res_active_count % len(sla_offsets)]
+                    sla_dt = datetime.utcnow() + timedelta(hours=offset_hrs, minutes=random.randint(5, 30))
+                    if field_res:
+                        field_res.active_tickets_count += 1
+                    ai_action = f"Auto-assigned ({priority} Zero-Touch) to {field_res.name if field_res else 'field engineer'}"[:100]
             else:
                 # P1/P2: Half pending approval, half approved & auto-assigned
                 is_pending = (random.random() < 0.5)

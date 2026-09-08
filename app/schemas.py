@@ -543,3 +543,22 @@ class ResourceTimelineResponse(BaseModel):
     urgent_count: int
     next_sla_deadline: Optional[datetime] = None
 
+
+class AutoDispatchToggleRequest(BaseModel):
+    enabled: bool
+
+
+class AutoDispatchStatusResponse(BaseModel):
+    enabled: bool
+    unassigned_p3_p4_count: int
+    market: str
+    dispatched_count: Optional[int] = 0
+    dispatched_ticket_codes: Optional[List[str]] = []
+
+
+class SimulateAiAlertRequest(BaseModel):
+    priority: Optional[str] = "P3"
+    category: Optional[str] = "Optical Telemetry"
+    description: Optional[str] = None
+    region: Optional[str] = None
+
