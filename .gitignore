@@ -35,10 +35,6 @@ pip-log.txt
 pip-delete-this-directory.txt
 
 # Unit test, coverage reports & test suites
-app/tests/
-tests/
-test_*.py
-*_test.py
 htmlcov/
 .tox/
 .nox/

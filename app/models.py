@@ -12,7 +12,7 @@ class User(Base):
     email = Column(String(255), unique=True, index=True, nullable=False)
     hashed_password = Column(String(255), nullable=False)
     full_name = Column(String(255), nullable=False)
-    role = Column(String(50), nullable=False)  # Executive, NOC, Care, Revenue, Admin
+    role = Column(String(50), nullable=False)  # Executive, NOC, Care, Revenue, Admin, Viewer
     phone = Column(String(50), nullable=True, default='+91 98200 12345')
     is_active = Column(Boolean, default=True)
     created_at = Column(DateTime, default=datetime.utcnow)

@@ -25,7 +25,7 @@ def get_orchestration_queue(
 def propose_orchestration_workflow(
     req: RecommendOrchestrationRequest,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_roles(["NOC", "Admin"])),
     market: str = Depends(get_current_market)
 ):
     ticket = db.query(Ticket).filter(Ticket.id == req.ticket_id).first()

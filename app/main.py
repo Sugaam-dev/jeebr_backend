@@ -67,9 +67,41 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.BACKEND_CORS_ORIGINS,
     allow_credentials=True,
-    allow_methods=["*"],
+    allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
     allow_headers=["*"],
 )
+
+# Security Headers & Content-Security-Policy Middleware
+@app.middleware("http")
+async def add_security_headers(request, call_next):
+    response = await call_next(request)
+    
+    # 1. Standard defense-in-depth headers
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+    response.headers["Permissions-Policy"] = "geolocation=(), microphone=(), camera=()"
+    
+    # 2. Strict-Transport-Security (HTTPS production environments)
+    if settings.COOKIE_SECURE or settings.ENVIRONMENT.lower() in ('production', 'prod'):
+        response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains; preload"
+
+    # 3. Practical Content-Security-Policy tailored for SentinelOS Vite/React Single-Page App
+    # Allows self assets, inline styles required by React/Tailwind, and data/blob for local SVGs/images
+    csp_directives = [
+        "default-src 'self'",
+        "script-src 'self'",
+        "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
+        "font-src 'self' https://fonts.gstatic.com data:",
+        "img-src 'self' data: blob:",
+        "connect-src 'self' " + " ".join(settings.BACKEND_CORS_ORIGINS),
+        "object-src 'none'",
+        "base-uri 'self'",
+        "form-action 'self'",
+        "frame-ancestors 'none'"
+    ]
+    response.headers["Content-Security-Policy"] = "; ".join(csp_directives)
+    return response
 
 # Include API Routers
 app.include_router(auth.router, prefix=settings.API_V1_STR)

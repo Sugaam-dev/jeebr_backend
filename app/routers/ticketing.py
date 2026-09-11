@@ -11,7 +11,7 @@ from app.schemas import (
     ApprovalCallLogResponse, AutoDispatchToggleRequest, AutoDispatchStatusResponse,
     SimulateAiAlertRequest
 )
-from app.auth import get_current_user, require_roles
+from app.auth import get_current_user, require_roles, require_not_viewer
 from app.markets import get_current_market
 from app.services.ticketing_engine import (
     create_and_dispatch_ticket,
@@ -84,7 +84,7 @@ def get_tickets(
 def raise_ticket(
     req: TicketCreateRequest,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_not_viewer),
     market: str = Depends(get_current_market)
 ):
     """
@@ -125,7 +125,7 @@ def get_auto_dispatch_settings(
 def update_auto_dispatch_settings(
     req: AutoDispatchToggleRequest,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_roles(["NOC", "Admin"])),
     market: str = Depends(get_current_market)
 ):
     """
@@ -138,7 +138,7 @@ def update_auto_dispatch_settings(
 @router.post("/auto-dispatch-now", response_model=AutoDispatchStatusResponse)
 def force_auto_dispatch_unassigned(
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_roles(["NOC", "Admin"])),
     market: str = Depends(get_current_market)
 ):
     """Directly trigger batch auto-dispatch for all pending P3/P4 tickets in current market."""
@@ -153,7 +153,7 @@ def force_auto_dispatch_unassigned(
 def trigger_ai_predicted_alert(
     req: SimulateAiAlertRequest,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_roles(["NOC", "Admin"])),
     market: str = Depends(get_current_market)
 ):
     """
@@ -178,7 +178,7 @@ def trigger_ai_predicted_alert(
 @router.post("/reset-demo-state", response_model=AutoDispatchStatusResponse)
 def reset_demo_state_endpoint(
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_roles(["Admin"])),
     market: str = Depends(get_current_market)
 ):
     """
@@ -237,7 +237,7 @@ def get_resources(
 def create_resource(
     req: ResourceCreate,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user)
+    current_user: User = Depends(require_roles(["Admin"]))
 ):
     """Create a new resource (field engineer or internal staff)."""
     res = Resource(
@@ -392,7 +392,7 @@ def approve_ticket(
     ticket_id: int,
     req: TicketApproveRequest,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user)
+    current_user: User = Depends(require_roles(["NOC", "Admin"]))
 ):
     """
     Approve a P1/P2 ticket.
@@ -418,7 +418,7 @@ def reject_ticket_endpoint(
     ticket_id: int,
     req: TicketRejectRequest,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user)
+    current_user: User = Depends(require_roles(["NOC", "Admin"]))
 ):
     """Reject approval for a ticket."""
     try:
@@ -435,7 +435,7 @@ def resolve_ticket_endpoint(
     ticket_id: int,
     req: TicketResolveRequest,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user)
+    current_user: User = Depends(require_roles(["NOC", "Care", "Admin"]))
 ):
     """Mark ticket as resolved and release resource workload capacity."""
     try:
@@ -471,7 +471,7 @@ def get_recent_calls(
 def simulate_voice_call(
     ticket_id: int,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user)
+    current_user: User = Depends(require_roles(["NOC", "Admin"]))
 ):
     """Re-trigger or simulate an automated voice alert call to the approving authority."""
     ticket = db.query(Ticket).filter(Ticket.id == ticket_id).first()

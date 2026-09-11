@@ -23,7 +23,7 @@ def get_node_predictions(
 def propose_assurance_dispatch(
     req: RecommendAssuranceRequest,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_roles(["NOC", "Admin"])),
     market: str = Depends(get_current_market)
 ):
     node = db.query(Node).filter(Node.id == req.node_id).first()

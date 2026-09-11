@@ -20,26 +20,35 @@ def seed_database():
 
     db = SessionLocal()
     try:
-        print("1. Seeding Universal Demo Users (PMRG Solution)...")
+        print("1. Seeding Universal Demo Users & Client Viewer Account (PMRG Solution)...")
         users_data = [
             ("executive@pmrg.in", "admin123", "Rajesh Singhania", "Executive"),
             ("noc@pmrg.in", "admin123", "Vikram Rathore", "NOC"),
             ("care@pmrg.in", "admin123", "Pooja Sharma", "Care"),
             ("revenue@pmrg.in", "admin123", "Anand Kulkarni", "Revenue"),
             ("admin@pmrg.in", "admin123", "PMRG AI Administrator", "Admin"),
+            ("client@pmrgsolution.com", "Client@pmrg123", "Client Stakeholder", "Viewer"),
         ]
 
         users = []
         for email, pwd, name, role in users_data:
-            u = User(
-                email=email,
-                hashed_password=hash_password(pwd),
-                full_name=name,
-                role=role,
-                is_active=True,
-                created_at=datetime.utcnow() - timedelta(days=180)
-            )
-            db.add(u)
+            existing = db.query(User).filter(User.email == email.lower().strip()).first()
+            if existing:
+                existing.hashed_password = hash_password(pwd)
+                existing.full_name = name
+                existing.role = role
+                existing.is_active = True
+                u = existing
+            else:
+                u = User(
+                    email=email.lower().strip(),
+                    hashed_password=hash_password(pwd),
+                    full_name=name,
+                    role=role,
+                    is_active=True,
+                    created_at=datetime.utcnow() - timedelta(days=180)
+                )
+                db.add(u)
             users.append(u)
         db.commit()
 

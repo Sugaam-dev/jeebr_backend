@@ -36,7 +36,7 @@ def list_journey_nbas(
 def propose_journey_action(
     req: RecommendJourneyRequest,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_roles(["Care", "Admin"])),
     market: str = Depends(get_current_market)
 ):
     customer = db.query(Customer).filter(Customer.id == req.customer_id).first()

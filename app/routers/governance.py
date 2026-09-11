@@ -4,7 +4,7 @@ from sqlalchemy.orm import Session
 from app.database import get_db
 from app.models import Recommendation, AuditLog, User
 from app.schemas import RecommendationResponse, AuditLogResponse, ApproveRejectRequest
-from app.auth import get_current_user, require_roles
+from app.auth import get_current_user, require_roles, require_not_viewer, log_security_event
 from app.markets import get_current_market
 from app.services.governance_service import approve_recommendation, reject_recommendation
 
@@ -16,7 +16,8 @@ MODULE_ROLE_MAP = {
     "Churn Prediction & Retention AI": ["Care", "Admin"],
     "Intelligent Customer Journeys": ["Care", "Admin"],
     "AI-driven OSS/BSS Orchestration": ["NOC", "Admin"],
-    "Revenue Assurance & Leakage Analytics": ["Revenue", "Admin"]
+    "Revenue Assurance & Leakage Analytics": ["Revenue", "Admin"],
+    "Automatic Ticketing & Regional Dispatch": ["NOC", "Admin"]
 }
 
 @router.get("/recommendations", response_model=List[RecommendationResponse])
@@ -38,7 +39,7 @@ def get_recommendations(
 def approve_action(
     req: ApproveRejectRequest,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user)
+    current_user: User = Depends(require_not_viewer)
 ):
     rec = db.query(Recommendation).filter(Recommendation.id == req.recommendation_id).first()
     if not rec:
@@ -47,6 +48,15 @@ def approve_action(
     # Enforce RBAC per module
     allowed = MODULE_ROLE_MAP.get(rec.source_module, ["Admin"])
     if current_user.role != "Admin" and current_user.role not in allowed:
+        log_security_event(
+            db=db,
+            action=f"Unauthorized approval attempt for recommendation #{rec.id} by {current_user.role}",
+            decision="ACCESS_DENIED",
+            user=current_user,
+            endpoint="/api/governance/approve",
+            method="POST",
+            market_id=rec.market_id or "mumbai"
+        )
         raise HTTPException(
             status_code=403,
             detail=f"Approval requires role in {allowed}. Current user role is {current_user.role}."
@@ -62,7 +72,7 @@ def approve_action(
 def reject_action(
     req: ApproveRejectRequest,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user)
+    current_user: User = Depends(require_not_viewer)
 ):
     rec = db.query(Recommendation).filter(Recommendation.id == req.recommendation_id).first()
     if not rec:
@@ -71,6 +81,15 @@ def reject_action(
     # Enforce RBAC per module
     allowed = MODULE_ROLE_MAP.get(rec.source_module, ["Admin"])
     if current_user.role != "Admin" and current_user.role not in allowed:
+        log_security_event(
+            db=db,
+            action=f"Unauthorized reject attempt for recommendation #{rec.id} by {current_user.role}",
+            decision="ACCESS_DENIED",
+            user=current_user,
+            endpoint="/api/governance/reject",
+            method="POST",
+            market_id=rec.market_id or "mumbai"
+        )
         raise HTTPException(
             status_code=403,
             detail=f"Rejection requires role in {allowed}. Current user role is {current_user.role}."

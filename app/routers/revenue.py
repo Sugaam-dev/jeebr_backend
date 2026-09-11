@@ -23,7 +23,7 @@ def get_revenue_leakages(
 def propose_revenue_remediation(
     req: RecommendRevenueRequest,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_roles(["Revenue", "Admin"])),
     market: str = Depends(get_current_market)
 ):
     invoice = db.query(Invoice).filter(Invoice.id == req.invoice_id).first()
