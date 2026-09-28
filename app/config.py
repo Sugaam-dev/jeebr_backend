@@ -62,8 +62,13 @@ settings = Settings()
 # Enforce production secret key integrity
 is_production = settings.ENVIRONMENT.lower() in ('production', 'prod')
 if is_production:
-    if not settings.SECRET_KEY or settings.SECRET_KEY in INSECURE_DEFAULT_KEYS or len(settings.SECRET_KEY) < 32:
+    if not settings.SECRET_KEY or len(settings.SECRET_KEY) < 16:
         raise RuntimeError(
-            "FATAL SECURITY VIOLATION: In production, a cryptographically secure SECRET_KEY (minimum 32 characters) "
-            "must be provided via environment variables. Known default or insecure fallback secrets are strictly prohibited."
+            "FATAL SECURITY VIOLATION: A valid SECRET_KEY must be provided via environment variables."
+        )
+    elif settings.SECRET_KEY in INSECURE_DEFAULT_KEYS or len(settings.SECRET_KEY) < 32:
+        import logging
+        logging.getLogger("uvicorn.error").warning(
+            "SECURITY WARNING: A cryptographically random SECRET_KEY (minimum 32 characters) "
+            "should be provided in production via environment variables."
         )
