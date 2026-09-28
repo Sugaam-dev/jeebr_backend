@@ -61,7 +61,7 @@ class Customer(Base):
     plan_price = Column(Float, nullable=False, default=299.0)  # Nominal pack/plan price in INR (₹)
     revenue_30d = Column(Float, nullable=False, default=295.0)  # Actual customer-level revenue generated over the last 30 days
     actual_arpu = Column(Float, nullable=False, default=295.0)  # Synchronized with revenue_30d
-    arpu = Column(Float, nullable=False)  # Synchronized with revenue_30d for backwards compatibility
+    arpu = Column(Float, nullable=False, default=295.0)  # Synchronized with revenue_30d for backwards compatibility
     recharge_validity_days = Column(Integer, default=28)
     days_to_expiry = Column(Integer, default=14)
     validity_status = Column(String(50), default='Active')  # Active, Expiring Soon, Grace Period, Expired
@@ -71,7 +71,7 @@ class Customer(Base):
     last_recharge_amount = Column(Float, nullable=True)
     payment_method = Column(String(50), default='UPI')
     tenure_months = Column(Integer, default=1)
-    signup_date = Column(DateTime, nullable=False)
+    signup_date = Column(DateTime, nullable=False, default=datetime.utcnow)
     status = Column(String(50), index=True, default='Active')  # Active, At-Risk, Churned
     node_id = Column(Integer, ForeignKey('nodes.id'), nullable=True)
     current_stage = Column(String(50), default='Use')  # Acquisition, Install, Use, Renewal, Complaint, Win-back

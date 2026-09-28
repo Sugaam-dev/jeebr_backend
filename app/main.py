@@ -80,6 +80,20 @@ def ensure_ticket_columns():
                 conn.commit()
             except Exception:
                 pass
+
+            # Customers financial & signup defaults
+            for col, default_val in [
+                ("arpu", "295.0"),
+                ("actual_arpu", "295.0"),
+                ("revenue_30d", "295.0"),
+                ("plan_price", "299.0"),
+                ("signup_date", "NOW()")
+            ]:
+                try:
+                    conn.execute(text(f"ALTER TABLE customers ALTER COLUMN {col} SET DEFAULT {default_val};"))
+                    conn.commit()
+                except Exception:
+                    pass
     except Exception:
         pass
 
