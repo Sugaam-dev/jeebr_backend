@@ -5,6 +5,7 @@ from app.database import get_db
 from app.models import Recommendation, AuditLog, User
 from app.schemas import RecommendationResponse, AuditLogResponse, ApproveRejectRequest
 from app.auth import get_current_user, require_roles, require_not_viewer, log_security_event
+from app.services.rbac_service import is_super_admin, is_admin_or_super, normalize_role_name
 from app.markets import get_current_market
 from app.services.governance_service import approve_recommendation, reject_recommendation
 
@@ -47,7 +48,9 @@ def approve_action(
 
     # Enforce RBAC per module
     allowed = MODULE_ROLE_MAP.get(rec.source_module, ["Admin"])
-    if current_user.role != "Admin" and current_user.role not in allowed:
+    norm_user_role = normalize_role_name(current_user.role)
+    norm_allowed = [normalize_role_name(r) for r in allowed]
+    if not is_admin_or_super(current_user.role) and norm_user_role not in norm_allowed:
         log_security_event(
             db=db,
             action=f"Unauthorized approval attempt for recommendation #{rec.id} by {current_user.role}",
@@ -80,7 +83,9 @@ def reject_action(
 
     # Enforce RBAC per module
     allowed = MODULE_ROLE_MAP.get(rec.source_module, ["Admin"])
-    if current_user.role != "Admin" and current_user.role not in allowed:
+    norm_user_role = normalize_role_name(current_user.role)
+    norm_allowed = [normalize_role_name(r) for r in allowed]
+    if not is_admin_or_super(current_user.role) and norm_user_role not in norm_allowed:
         log_security_event(
             db=db,
             action=f"Unauthorized reject attempt for recommendation #{rec.id} by {current_user.role}",

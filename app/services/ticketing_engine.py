@@ -1,7 +1,7 @@
 from datetime import datetime, timedelta
 import random
 from typing import Optional, List, Dict, Any
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload, selectinload
 from sqlalchemy import func
 from app.models import Ticket, Resource, Customer, Node, User, AuditLog, Recommendation
 from app.schemas import TicketCreateRequest, TicketDetailResponse, TicketingStatsResponse
@@ -109,28 +109,35 @@ def normalize_priority(priority: str) -> str:
 
 
 def find_best_internal_resource(db: Session, market_id: str) -> Optional[Resource]:
-    """Find the best available internal team resource with the lowest ticket count."""
-    # Look for INTERNAL resource in this market or universal
-    res = db.query(Resource).filter(
+    """Find the best available internal team resource with remaining capacity."""
+    query = db.query(Resource).filter(
         Resource.market_id == market_id,
         Resource.resource_type == "INTERNAL",
         Resource.status != "Offline"
-    ).order_by(Resource.active_tickets_count.asc()).first()
+    )
+    all_res = query.all()
+    available = [r for r in all_res if r.active_tickets_count < (r.max_capacity or 10)]
+    if available:
+        available.sort(key=lambda r: r.active_tickets_count)
+        return available[0]
 
-    if not res:
-        # Fallback to any internal resource
-        res = db.query(Resource).filter(
-            Resource.resource_type == "INTERNAL",
-            Resource.status != "Offline"
-        ).order_by(Resource.active_tickets_count.asc()).first()
-
-    return res
+    # Fallback to any internal resource with remaining capacity
+    fallback_query = db.query(Resource).filter(
+        Resource.resource_type == "INTERNAL",
+        Resource.status != "Offline"
+    ).all()
+    fallback_avail = [r for r in fallback_query if r.active_tickets_count < (r.max_capacity or 10)]
+    if fallback_avail:
+        fallback_avail.sort(key=lambda r: r.active_tickets_count)
+        return fallback_avail[0]
+    return None
 
 
 def find_best_regional_resource(db: Session, market_id: str, region: Optional[str]) -> Optional[Resource]:
     """
     Find best available FIELD resource for the given region/locality.
     Prioritizes exact region/locality match with available capacity, then least loaded.
+    Strictly returns None if all engineers are at or above max capacity.
     """
     query = db.query(Resource).filter(
         Resource.market_id == market_id,
@@ -138,26 +145,30 @@ def find_best_regional_resource(db: Session, market_id: str, region: Optional[st
         Resource.status != "Offline"
     )
 
+    all_resources = query.all()
+    from app.services.workload_service import get_active_jobs_count
+    for r in all_resources:
+        real_count = get_active_jobs_count(db, r.id)
+        if r.active_tickets_count != real_count:
+            r.active_tickets_count = real_count
+
+    available_resources = [r for r in all_resources if r.active_tickets_count < (r.max_capacity or 10)]
+    if not available_resources:
+        return None
+
     if region:
         region_clean = region.strip().lower()
         exact_matches = [
-            r for r in query.all()
+            r for r in available_resources
             if r.region.strip().lower() in region_clean or region_clean in r.region.strip().lower()
         ]
         if exact_matches:
-            under_cap = [r for r in exact_matches if r.active_tickets_count < r.max_capacity]
-            if under_cap:
-                under_cap.sort(key=lambda r: r.active_tickets_count)
-                return under_cap[0]
             exact_matches.sort(key=lambda r: r.active_tickets_count)
             return exact_matches[0]
 
-    # Fallback to any available FIELD resource with remaining capacity
-    under_cap_market = query.filter(Resource.active_tickets_count < Resource.max_capacity).order_by(Resource.active_tickets_count.asc()).first()
-    if under_cap_market:
-        return under_cap_market
+    available_resources.sort(key=lambda r: r.active_tickets_count)
+    return available_resources[0]
 
-    return query.order_by(Resource.active_tickets_count.asc()).first()
 
 
 def generate_ticket_code(db: Session, market_id: str, source: str) -> str:
@@ -191,8 +202,39 @@ def create_and_dispatch_ticket(
     region = data.region
     customer = None
     node = None
+    resolved_customer_id = data.customer_id
 
-    if data.customer_id:
+    if user and user.role == "Customer":
+        # Server-authoritative customer identity derivation (Rule 32: Never trust client customer ID, prevent customer_id=NULL)
+        auth_cust = db.query(Customer).filter(
+            func.lower(Customer.email) == user.email.lower().strip()
+        ).first()
+        if auth_cust:
+            resolved_customer_id = auth_cust.id
+            customer = auth_cust
+            if not region:
+                region = auth_cust.locality
+        else:
+            # Fallback auto-provision Customer profile for authenticated customer account to prevent orphaned tickets
+            auth_cust = Customer(
+                market_id=market_id,
+                customer_code=f"CUST-{market_id[:3].upper()}-{user.id:04d}",
+                name=user.full_name,
+                email=user.email,
+                phone=user.phone or "+91 98200 12345",
+                locality=region or "Regional Central",
+                segment="Prepaid - Daily Unlimited",
+                customer_type="Prepaid",
+                plan_name="Fibre 100Mbps Essential",
+                service_address="Subscriber Registered Premise",
+                service_latitude=19.0760 if market_id == "mumbai" else 22.5726,
+                service_longitude=72.8777 if market_id == "mumbai" else 88.3639
+            )
+            db.add(auth_cust)
+            db.flush()
+            resolved_customer_id = auth_cust.id
+            customer = auth_cust
+    elif data.customer_id:
         customer = db.query(Customer).filter(Customer.id == data.customer_id).first()
         if customer and not region:
             region = customer.locality
@@ -216,7 +258,7 @@ def create_and_dispatch_ticket(
         ticket_code=ticket_code,
         source=source,
         region=region,
-        customer_id=data.customer_id,
+        customer_id=resolved_customer_id,
         node_id=data.node_id,
         category=data.category,
         priority=p_norm,
@@ -327,18 +369,37 @@ def approve_and_assign_ticket(
 
     assigned_res = None
     if resource_id:
-        # Manual Technician Assignment option selected by approving authority
-        assigned_res = db.query(Resource).filter(
-            Resource.id == resource_id,
-            Resource.market_id == ticket.market_id
-        ).first()
-        if not assigned_res:
-            raise ValueError(f"Selected technician (ID: {resource_id}) was not found in market '{ticket.market_id}'")
+        # Atomic capacity check & row lock (Section 23 & 24)
+        from app.services.workload_service import reserve_engineer_capacity, get_active_jobs_count
+        assigned_res = reserve_engineer_capacity(db, resource_id)
+        if assigned_res.market_id != ticket.market_id:
+            raise ValueError(f"Selected technician (ID: {resource_id}) does not belong to market '{ticket.market_id}'")
         
         ticket.assigned_resource_id = assigned_res.id
         ticket.assigned_at = datetime.utcnow()
         ticket.status = "Assigned"
-        assigned_res.active_tickets_count += 1
+
+        # Synchronize authoritative FieldAssignment
+        from app.models import FieldAssignment
+        existing_fa = db.query(FieldAssignment).filter(FieldAssignment.ticket_id == ticket.id).first()
+        if not existing_fa:
+            new_fa = FieldAssignment(
+                market_id=ticket.market_id,
+                ticket_id=ticket.id,
+                engineer_id=assigned_res.id,
+                status="ASSIGNED",
+                assigned_at=datetime.utcnow(),
+                notes=ticket.approval_notes
+            )
+            db.add(new_fa)
+        else:
+            existing_fa.engineer_id = assigned_res.id
+            existing_fa.status = "ASSIGNED"
+
+        db.flush()
+        assigned_res.active_tickets_count = get_active_jobs_count(db, assigned_res.id)
+        if assigned_res.active_tickets_count >= assigned_res.max_capacity:
+            assigned_res.status = "Busy"
         ticket.ai_triage_action = f"Approved by {user.full_name} & manually assigned to {assigned_res.name} ({assigned_res.region})"
     else:
         # AI Auto-Dispatch to regional resource
@@ -351,11 +412,33 @@ def approve_and_assign_ticket(
             ticket.assigned_resource_id = assigned_res.id
             ticket.assigned_at = datetime.utcnow()
             ticket.status = "Assigned"
-            assigned_res.active_tickets_count += 1
+
+            from app.models import FieldAssignment
+            existing_fa = db.query(FieldAssignment).filter(FieldAssignment.ticket_id == ticket.id).first()
+            if not existing_fa:
+                new_fa = FieldAssignment(
+                    market_id=ticket.market_id,
+                    ticket_id=ticket.id,
+                    engineer_id=assigned_res.id,
+                    status="ASSIGNED",
+                    assigned_at=datetime.utcnow(),
+                    notes=f"Auto-dispatched to {assigned_res.name}"
+                )
+                db.add(new_fa)
+            else:
+                existing_fa.engineer_id = assigned_res.id
+                existing_fa.status = "ASSIGNED"
+
+            db.flush()
+            from app.services.workload_service import get_active_jobs_count
+            assigned_res.active_tickets_count = get_active_jobs_count(db, assigned_res.id)
+            if assigned_res.active_tickets_count >= assigned_res.max_capacity:
+                assigned_res.status = "Busy"
             ticket.ai_triage_action = f"Approved by {user.full_name} & auto-dispatched to {assigned_res.name} ({assigned_res.region})"
         else:
             ticket.status = "Approved"
             ticket.ai_triage_action = f"Approved by {user.full_name} — waiting for resource availability"
+
 
     # Update matching Recommendation in Governance
     recs = db.query(Recommendation).filter(
@@ -393,8 +476,15 @@ def approve_and_assign_ticket(
     )
     db.add(audit)
     db.commit()
-    db.refresh(ticket)
-    return ticket
+
+    reloaded = db.query(Ticket).options(
+        joinedload(Ticket.assigned_resource),
+        joinedload(Ticket.customer),
+        joinedload(Ticket.node),
+        joinedload(Ticket.approved_by),
+        selectinload(Ticket.call_logs)
+    ).filter(Ticket.id == ticket.id).first()
+    return reloaded or ticket
 
 
 def reject_ticket(
@@ -442,8 +532,15 @@ def reject_ticket(
     )
     db.add(audit)
     db.commit()
-    db.refresh(ticket)
-    return ticket
+
+    reloaded = db.query(Ticket).options(
+        joinedload(Ticket.assigned_resource),
+        joinedload(Ticket.customer),
+        joinedload(Ticket.node),
+        joinedload(Ticket.approved_by),
+        selectinload(Ticket.call_logs)
+    ).filter(Ticket.id == ticket.id).first()
+    return reloaded or ticket
 
 
 def resolve_ticket(
@@ -463,17 +560,34 @@ def resolve_ticket(
     ticket.status = "Resolved"
     ticket.resolved_at = datetime.utcnow()
 
+    # If field assignment exists, complete it
+    from app.models import FieldAssignment
+    fa = db.query(FieldAssignment).filter(FieldAssignment.ticket_id == ticket.id).first()
+    if fa and fa.status not in ("COMPLETED", "CANCELLED", "REJECTED"):
+        fa.status = "COMPLETED"
+        fa.completed_at = datetime.utcnow()
+
     # Decrement resource load and restore Available status if capacity freed
     if ticket.assigned_resource_id:
         res = db.query(Resource).filter(Resource.id == ticket.assigned_resource_id).first()
-        if res and res.active_tickets_count > 0:
-            res.active_tickets_count -= 1
+        if res:
+            db.flush()
+            from app.services.workload_service import get_active_jobs_count
+            res.active_tickets_count = get_active_jobs_count(db, res.id)
             if res.active_tickets_count < res.max_capacity and res.status == 'Busy':
                 res.status = 'Available'
 
+
     db.commit()
-    db.refresh(ticket)
-    return ticket
+
+    reloaded = db.query(Ticket).options(
+        joinedload(Ticket.assigned_resource),
+        joinedload(Ticket.customer),
+        joinedload(Ticket.node),
+        joinedload(Ticket.approved_by),
+        selectinload(Ticket.call_logs)
+    ).filter(Ticket.id == ticket.id).first()
+    return reloaded or ticket
 
 
 def build_ticket_detail_response(ticket: Ticket) -> TicketDetailResponse:

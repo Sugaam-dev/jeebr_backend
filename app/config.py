@@ -34,6 +34,23 @@ class Settings(BaseSettings):
         ).split(',') if origin.strip()
     ]
 
+    # Field Operations & OTP Configuration
+    FIELD_OTP_EXPIRY_SECONDS: int = int(os.getenv('FIELD_OTP_EXPIRY_SECONDS', '600'))
+    FIELD_OTP_MAX_ATTEMPTS: int = int(os.getenv('FIELD_OTP_MAX_ATTEMPTS', '5'))
+    FIELD_LOCATION_UPDATE_INTERVAL_SECONDS: int = int(os.getenv('FIELD_LOCATION_UPDATE_INTERVAL_SECONDS', '10'))
+    FIELD_LOCATION_RETENTION_DAYS: int = int(os.getenv('FIELD_LOCATION_RETENTION_DAYS', '90'))
+
+    # Google Maps & Routing Configuration
+    GOOGLE_MAPS_API_KEY: str = os.getenv('GOOGLE_MAPS_API_KEY', '')
+    ROUTE_REFRESH_MIN_DISTANCE_METERS: float = float(os.getenv('ROUTE_REFRESH_MIN_DISTANCE_METERS', '150.0'))
+    ROUTE_REFRESH_MIN_INTERVAL_SECONDS: int = int(os.getenv('ROUTE_REFRESH_MIN_INTERVAL_SECONDS', '60'))
+    ROUTE_MAX_AGE_SECONDS: int = int(os.getenv('ROUTE_MAX_AGE_SECONDS', '300'))
+    REDIS_URL: str = os.getenv('REDIS_URL', '')
+
+    # OLT Integration & Telemetry Foundation (Section 22 & 26)
+    OLT_PROVIDER: str = os.getenv('OLT_PROVIDER', 'synthetic')  # 'synthetic', 'snmp_mock', 'mock'
+    OLT_POLL_INTERVAL_SECONDS: int = int(os.getenv('OLT_POLL_INTERVAL_SECONDS', '60'))
+
     model_config = {
         "case_sensitive": True,
         "env_file": ".env",

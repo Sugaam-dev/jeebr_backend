@@ -300,7 +300,9 @@ def test_approval_engine_voice_alert_and_technician_assignment():
     assert resources_res.status_code == 200
     resources = resources_res.json()
     assert len(resources) > 0
-    target_resource = resources[0]
+    # Choose a resource that has available capacity (Phase 6 capacity enforcement)
+    available_resources = [r for r in resources if (r.get("active_tickets_count", 0) < r.get("max_capacity", 8))]
+    target_resource = available_resources[0] if available_resources else resources[0]
 
     # 5. Approve with custom notes and manual technician assignment
     custom_note = "Emergency splice authorized by NOC Lead. Manual technician dispatch verified."

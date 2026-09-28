@@ -1,6 +1,6 @@
 from datetime import datetime
 from typing import Optional, List, Any, Dict
-from pydantic import BaseModel, EmailStr
+from pydantic import BaseModel, EmailStr, Field, model_validator
 
 # Auth Schemas
 class Token(BaseModel):
@@ -9,6 +9,8 @@ class Token(BaseModel):
     role: str
     user_name: str
     email: str
+    rank: int = 10
+    permissions: List[str] = []
 
 class TokenData(BaseModel):
     email: Optional[str] = None
@@ -29,10 +31,75 @@ class UserResponse(BaseModel):
     email: str
     full_name: str
     role: str
-    is_active: bool
+    is_active: bool = True
+    rank: int = 10
+    permissions: List[str] = []
 
     class Config:
         from_attributes = True
+
+class AdminUserCreateRequest(BaseModel):
+    email: EmailStr
+    password: str
+    full_name: Optional[str] = None
+    name: Optional[str] = None
+    role: str = "Viewer"
+    is_active: bool = True
+
+    @model_validator(mode='after')
+    def resolve_name(self):
+        if not self.full_name and not self.name:
+            raise ValueError("Full name is required.")
+        if not self.full_name:
+            self.full_name = self.name
+        return self
+
+class AdminUserUpdateRequest(BaseModel):
+    full_name: Optional[str] = None
+    name: Optional[str] = None
+    role: Optional[str] = None
+    is_active: Optional[bool] = None
+
+class UserStatusUpdateRequest(BaseModel):
+    is_active: bool
+
+# RBAC Schemas
+class PermissionResponse(BaseModel):
+    id: Optional[int] = None
+    code: str
+    name: str
+    category: str
+    description: Optional[str] = None
+
+    class Config:
+        from_attributes = True
+
+class RoleResponse(BaseModel):
+    id: int
+    name: str
+    display_name: str
+    description: Optional[str] = None
+    rank: int
+    is_system: bool
+    permissions: List[str] = []
+
+    class Config:
+        from_attributes = True
+
+class RoleCreateRequest(BaseModel):
+    name: str
+    display_name: str
+    description: Optional[str] = None
+    rank: Optional[int] = 50
+    permissions: List[str] = []
+
+class RoleUpdateRequest(BaseModel):
+    display_name: Optional[str] = None
+    description: Optional[str] = None
+    permissions: Optional[List[str]] = None
+
+class UserRoleAssignRequest(BaseModel):
+    role: str
 
 
 # Standard Contributing Signal Schema used across all 4 scored modules
@@ -561,4 +628,230 @@ class SimulateAiAlertRequest(BaseModel):
     category: Optional[str] = "Optical Telemetry"
     description: Optional[str] = None
     region: Optional[str] = None
+
+
+# --- Field Operations, Live Tracking & Customer OTP Schemas ---
+
+class LocationPingCreate(BaseModel):
+    latitude: float
+    longitude: float
+    accuracy: Optional[float] = 10.0
+    speed: Optional[float] = 0.0
+    heading: Optional[float] = 0.0
+    battery_level: Optional[float] = None
+    is_mock: Optional[bool] = False
+    recorded_at: Optional[datetime] = None
+
+    @model_validator(mode='before')
+    @classmethod
+    def map_aliases_and_prevalidate(cls, data: Any) -> Any:
+        if isinstance(data, dict):
+            # Map legacy frontend alias keys if present and canonical not provided
+            if 'accuracy_meters' in data and 'accuracy' not in data:
+                data['accuracy'] = data['accuracy_meters']
+            if 'speed_mps' in data and 'speed' not in data:
+                data['speed'] = data['speed_mps']
+            if 'heading_degrees' in data and 'heading' not in data:
+                data['heading'] = data['heading_degrees']
+        return data
+
+
+class LocationPingResponse(BaseModel):
+    id: int
+    tracking_session_id: int
+    engineer_id: int
+    market_id: str
+    latitude: float
+    longitude: float
+    accuracy: float
+    speed: float
+    heading: float
+    is_mock: bool = False
+    recorded_at: datetime
+    received_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+class FieldAssignmentResponse(BaseModel):
+    id: int
+    market_id: str
+    ticket_id: int
+    ticket_code: Optional[str] = None
+    engineer_id: int
+    engineer_name: Optional[str] = None
+    engineer_phone: Optional[str] = None
+    status: str
+    assigned_at: Optional[datetime] = None
+    accepted_at: Optional[datetime] = None
+    en_route_at: Optional[datetime] = None
+    arrived_at: Optional[datetime] = None
+    work_started_at: Optional[datetime] = None
+    otp_requested_at: Optional[datetime] = None
+    otp_verified_at: Optional[datetime] = None
+    completed_at: Optional[datetime] = None
+    notes: Optional[str] = None
+
+    customer_id: Optional[int] = None
+    customer_name: Optional[str] = None
+    customer_phone: Optional[str] = None
+    customer_locality: Optional[str] = None
+    service_address: Optional[str] = None
+    service_latitude: Optional[float] = None
+    service_longitude: Optional[float] = None
+
+    ticket_category: Optional[str] = None
+    ticket_priority: Optional[str] = None
+    ticket_description: Optional[str] = None
+    sla_deadline: Optional[datetime] = None
+
+    current_latitude: Optional[float] = None
+    current_longitude: Optional[float] = None
+    location_status: Optional[str] = "UNAVAILABLE"
+    eta_minutes: Optional[int] = None
+
+    class Config:
+        from_attributes = True
+
+
+class FieldAssignmentTransitionRequest(BaseModel):
+    target_status: str
+    notes: Optional[str] = None
+
+
+class CompleteJobRequest(BaseModel):
+    resolution_notes: Optional[str] = None
+    customer_signature_confirmed: Optional[bool] = True
+    notes: Optional[str] = None
+
+
+class OtpRequestResponse(BaseModel):
+    assignment_id: int
+    id: Optional[int] = None
+    status: str
+    expires_in_seconds: int
+    message: str
+
+    @model_validator(mode="after")
+    def set_id_alias(self):
+        if self.id is None:
+            self.id = self.assignment_id
+        return self
+
+
+class OtpVerifyRequest(BaseModel):
+    otp: Optional[str] = None
+    otp_code: Optional[str] = None
+
+    def get_otp_code(self) -> str:
+        return (self.otp or self.otp_code or "").strip()
+
+
+class OtpVerifyResponse(BaseModel):
+    verified: bool
+    assignment_id: int
+    id: Optional[int] = None
+    status: str
+    message: str
+    attempts_remaining: Optional[int] = None
+
+    @model_validator(mode="after")
+    def set_id_alias(self):
+        if self.id is None:
+            self.id = self.assignment_id
+        return self
+
+
+class FieldOperationsSummaryResponse(BaseModel):
+    market_id: str
+    active_engineers: int
+    en_route: int
+    on_site: int
+    available: int
+    offline: int
+    active_jobs: int
+    sla_at_risk: int
+
+
+class EngineerWorkloadResponse(BaseModel):
+    id: int
+    name: str
+    email: Optional[str] = None
+    phone: Optional[str] = None
+    market_id: str
+    region: str
+    status: str
+    location_status: str
+    current_latitude: Optional[float] = None
+    current_longitude: Optional[float] = None
+    last_ping_at: Optional[datetime] = None
+    active_tickets_count: int
+    max_capacity: int
+    current_job_id: Optional[int] = None
+    current_job_ticket: Optional[str] = None
+    current_job_status: Optional[str] = None
+    current_job_eta_minutes: Optional[int] = None
+
+    # Workload & Capacity additions (Section 22)
+    engineer_id: Optional[int] = None
+    active_jobs: int = 0
+    max_active_jobs: int = 10
+    available_capacity: int = 0
+    capacity_status: str = "AVAILABLE"
+
+    class Config:
+        from_attributes = True
+
+class ConfigureCapacityRequest(BaseModel):
+    max_capacity: int = Field(..., ge=1, le=50, description="Maximum active jobs capacity")
+
+
+
+class OtpDetail(BaseModel):
+    available: bool = False
+    code: Optional[str] = None
+    expires_at: Optional[str] = None
+    remaining_seconds: Optional[int] = None
+
+
+class RouteWaypoint(BaseModel):
+    lat: float
+    lng: float
+
+
+class RouteResponse(BaseModel):
+    distance_meters: float
+    distance_km: float
+    duration_seconds: int
+    eta_minutes: int
+    provider: str
+    polyline: Optional[str] = None
+    waypoints: List[RouteWaypoint] = []
+    cached: bool = False
+
+
+class CustomerTrackingResponse(BaseModel):
+    ticket_id: int
+    ticket_code: str
+    status: str
+    category: str
+    priority: str
+    assigned_engineer_name: Optional[str] = None
+    assigned_engineer_phone: Optional[str] = None
+    engineer_status: Optional[str] = None
+    location_status: str
+    engineer_latitude: Optional[float] = None
+    engineer_longitude: Optional[float] = None
+    service_latitude: Optional[float] = None
+    service_longitude: Optional[float] = None
+    service_address: Optional[str] = None
+    eta_minutes: Optional[int] = None
+    otp_code: Optional[str] = None
+    otp_expires_in_seconds: Optional[int] = None
+    notes: Optional[str] = None
+    assignment_id: Optional[int] = None
+    tracking_active: bool = False
+    job_status: Optional[str] = None
+    otp: Optional[OtpDetail] = None
 

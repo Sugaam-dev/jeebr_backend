@@ -2,9 +2,11 @@ import random
 from datetime import datetime, timedelta
 from app.database import SessionLocal, engine, Base
 from app.models import (
-    User, Node, Customer, UsageRecord, Ticket, Invoice, Recommendation, AuditLog, Resource
+    User, Node, Customer, UsageRecord, Ticket, Invoice, Recommendation, AuditLog, Resource,
+    FieldAssignment, TrackingSession, LocationPing, FieldOtp
 )
 from app.auth import hash_password
+from app.services.rbac_service import ensure_rbac_seeded
 
 def seed_database():
     print("Ensuring database tables in Supabase / PostgreSQL...")
@@ -13,21 +15,29 @@ def seed_database():
     from sqlalchemy import text
     try:
         with engine.connect() as conn:
-            conn.execute(text("TRUNCATE TABLE audit_logs, recommendations, invoices, tickets, usage_records, customers, resources, nodes, users CASCADE;"))
+            conn.execute(text("TRUNCATE TABLE field_otps, location_pings, tracking_sessions, field_assignments, audit_logs, recommendations, invoices, tickets, usage_records, customers, resources, nodes, users CASCADE;"))
             conn.commit()
     except Exception as e:
         print(f"Note on truncate: {e}")
 
     db = SessionLocal()
     try:
-        print("1. Seeding Universal Demo Users & Client Viewer Account (PMRG Solution)...")
+        print("0. Seeding RBAC Permissions and Roles...")
+        ensure_rbac_seeded(db)
+        print("1. Seeding Universal Demo Users, Field Engineers, and Client Accounts...")
         users_data = [
+            ("superadmin@pmrg.in", "admin123", "Sentinel Super Administrator", "SUPER_ADMIN"),
             ("executive@pmrg.in", "admin123", "Rajesh Singhania", "Executive"),
             ("noc@pmrg.in", "admin123", "Vikram Rathore", "NOC"),
             ("care@pmrg.in", "admin123", "Pooja Sharma", "Care"),
             ("revenue@pmrg.in", "admin123", "Anand Kulkarni", "Revenue"),
             ("admin@pmrg.in", "admin123", "PMRG AI Administrator", "Admin"),
             ("client@pmrgsolution.com", "Client@pmrg123", "Client Stakeholder", "Viewer"),
+            ("rahul.field@pmrg.in", "admin123", "Rahul Kumar", "Field Engineer"),
+            ("amit.field@pmrg.in", "admin123", "Amit Sharma", "Field Engineer"),
+            ("priya.field@pmrg.in", "admin123", "Priya Singh", "Field Engineer"),
+            ("vikas.field@pmrg.in", "admin123", "Vikas Kumar", "Field Engineer"),
+            ("customer@pmrg.in", "admin123", "Rohan Mehta", "Customer"),
         ]
 
         users = []
@@ -64,6 +74,36 @@ def seed_database():
 
     finally:
         db.close()
+
+
+LOCALITY_COORDINATES = {
+    # Mumbai Regional Localities
+    "bandra west": (19.0596, 72.8295, "Hill Road, Bandra West, Mumbai 400050"),
+    "andheri east": (19.1136, 72.8697, "MIDC Central Road, Andheri East, Mumbai 400093"),
+    "malad west": (19.1860, 72.8485, "Link Road, Malad West, Mumbai 400064"),
+    "bkc": (19.0657, 72.8687, "G Block, BKC, Bandra East, Mumbai 400051"),
+    "powai": (19.1176, 72.9060, "Central Avenue, Hiranandani, Powai, Mumbai 400076"),
+    "lower parel": (19.0016, 72.8306, "Senapati Bapat Marg, Lower Parel, Mumbai 400013"),
+    "dadar": (19.0178, 72.8478, "Dadar TT Circle, Dadar East, Mumbai 400014"),
+    "thane west": (19.2183, 72.9781, "Ghodbunder Road, Thane West, Mumbai 400607"),
+    "worli": (19.0166, 72.8167, "Worli Sea Face, Worli, Mumbai 400018"),
+    "borivali": (19.2307, 72.8567, "SV Road, Borivali West, Mumbai 400092"),
+    "juhu": (19.1075, 72.8263, "JVPD Scheme, Juhu, Mumbai 400049"),
+    "ghatkopar": (19.0860, 72.9090, "LBS Marg, Ghatkopar West, Mumbai 400086"),
+    # Kolkata Regional Localities
+    "salt lake sector v": (22.5867, 88.4172, "Sector V, Salt Lake, Kolkata 700091"),
+    "park street": (22.5535, 88.3524, "Park Street, Kolkata 700016"),
+    "new town": (22.5898, 88.4744, "Action Area 1, New Town, Kolkata 700156"),
+    "ballygunge": (22.5280, 88.3654, "Ballygunge Circular Road, Kolkata 700019"),
+    "howrah": (22.5892, 88.3304, "Station Road, Howrah, Kolkata 711101"),
+    "jadavpur": (22.4988, 88.3712, "Raja SC Mullick Road, Jadavpur, Kolkata 700032"),
+    "behala": (22.4983, 88.3150, "Diamond Harbour Road, Behala, Kolkata 700034"),
+    "dum dum": (22.6420, 88.4312, "Jessore Road, Dum Dum, Kolkata 700028"),
+    "alipore": (22.5312, 88.3312, "Alipore Road, Kolkata 700027"),
+    "gariahat": (22.5186, 88.3650, "Gariahat Road, Kolkata 700029"),
+    "rajarhat": (22.6100, 88.4700, "Main Road, Rajarhat, Kolkata 700135"),
+    "shyambazar": (22.6001, 88.3700, "Five Point Crossing, Shyambazar, Kolkata 700004"),
+}
 
 
 def seed_market_dataset(db, market_id: str, users: list):
@@ -158,6 +198,8 @@ def seed_market_dataset(db, market_id: str, users: list):
     print(f"Seeding regional field resources & internal team for {market_id}...")
     if is_mumbai:
         resources_config = [
+            ("Rahul Kumar", "rahul.field@pmrg.in", "+91 98201 55001", "FIELD", "Bandra West"),
+            ("Amit Sharma", "amit.field@pmrg.in", "+91 98201 55002", "FIELD", "Andheri East"),
             ("Rohan Mhatre", "rohan.m@pmrg.in", "+91 98201 10011", "FIELD", "Bandra West"),
             ("Suraj Ghadge", "suraj.g@pmrg.in", "+91 98201 10012", "FIELD", "Andheri East"),
             ("Nitin Shinde", "nitin.s@pmrg.in", "+91 98201 10013", "FIELD", "Malad West"),
@@ -176,6 +218,8 @@ def seed_market_dataset(db, market_id: str, users: list):
         ]
     else:
         resources_config = [
+            ("Priya Singh", "priya.field@pmrg.in", "+91 98301 55001", "FIELD", "Salt Lake Sector V"),
+            ("Vikas Kumar", "vikas.field@pmrg.in", "+91 98301 55002", "FIELD", "New Town"),
             ("Subir Das", "subir.d@pmrg.in", "+91 98301 10011", "FIELD", "Salt Lake Sector V"),
             ("Anirban Ghosh", "anirban.g@pmrg.in", "+91 98301 10012", "FIELD", "Park Street"),
             ("Debojyoti Paul", "debojyoti.p@pmrg.in", "+91 98301 10013", "FIELD", "New Town"),
@@ -196,7 +240,17 @@ def seed_market_dataset(db, market_id: str, users: list):
     resources = []
     res_by_region = {}
     internal_resources = []
+    user_by_email = {u.email: u for u in users}
+
     for r_name, r_email, r_phone, r_type, r_region in resources_config:
+        u_match = user_by_email.get(r_email)
+        coords = LOCALITY_COORDINATES.get(r_region.lower())
+        if not coords:
+            coords = (19.0760, 72.8777, "") if is_mumbai else (22.5726, 88.3639, "")
+
+        init_lat = coords[0] + random.uniform(-0.005, 0.005) if r_type == "FIELD" else None
+        init_lon = coords[1] + random.uniform(-0.005, 0.005) if r_type == "FIELD" else None
+
         res = Resource(
             market_id=market_id,
             name=r_name,
@@ -207,6 +261,11 @@ def seed_market_dataset(db, market_id: str, users: list):
             status="Available",
             active_tickets_count=0,
             max_capacity=10 if r_type == "INTERNAL" else 8,
+            user_id=u_match.id if u_match else None,
+            current_latitude=init_lat,
+            current_longitude=init_lon,
+            last_ping_at=datetime.utcnow() - timedelta(minutes=random.randint(1, 5)) if r_type == "FIELD" else None,
+            location_status="ACTIVE" if r_type == "FIELD" else "UNAVAILABLE",
             created_at=datetime.utcnow() - timedelta(days=90)
         )
         db.add(res)
@@ -214,7 +273,8 @@ def seed_market_dataset(db, market_id: str, users: list):
         if r_type == "INTERNAL":
             internal_resources.append(res)
         else:
-            res_by_region[r_region.lower()] = res
+            if r_region.lower() not in res_by_region:
+                res_by_region[r_region.lower()] = res
     db.commit()
 
     prepaid_plans = [
@@ -310,6 +370,20 @@ def seed_market_dataset(db, market_id: str, users: list):
             nps = random.randint(7, 10)
             stage = random.choice(["Use", "Use", "Use", "Renewal"])
 
+        # Demo customer hook for authenticated customer tests
+        if is_mumbai and i == 1:
+            c_name = "Rohan Mehta"
+            c_email = "customer@pmrg.in"
+            area = "Bandra West"
+
+        coords = LOCALITY_COORDINATES.get(area.lower())
+        if not coords:
+            coords = (19.0760, 72.8777, "Central Locality") if is_mumbai else (22.5726, 88.3639, "Central Locality")
+
+        c_lat = coords[0] + random.uniform(-0.003, 0.003)
+        c_lon = coords[1] + random.uniform(-0.003, 0.003)
+        c_addr = f"Flat {random.randint(101, 904)}, Building #{i%20 + 1}, {coords[2]}"
+
         cust = Customer(
             market_id=market_id,
             customer_code=f"SUB-{cust_prefix}-{100000 + i}",
@@ -337,7 +411,10 @@ def seed_market_dataset(db, market_id: str, users: list):
             status=c_status,
             node_id=node.id,
             current_stage=stage,
-            nps_score=nps
+            nps_score=nps,
+            service_latitude=c_lat,
+            service_longitude=c_lon,
+            service_address=c_addr
         )
         db.add(cust)
         customers.append((cust, quota_monthly, is_node_degraded))
@@ -725,6 +802,250 @@ def seed_market_dataset(db, market_id: str, users: list):
             timestamp=datetime.utcnow() - time_offset
         )
         db.add(audit)
+
+    # 8. Seed Field Assignments & Live Tracking Sessions
+    print(f"Seeding field assignments and live tracking telemetry for {market_id}...")
+    now = datetime.utcnow()
+
+    if is_mumbai:
+        rahul = next((r for r in resources if r.name == "Rahul Kumar"), resources[0])
+        amit = next((r for r in resources if r.name == "Amit Sharma"), resources[1])
+        demo_cust = next((c[0] for c in customers if c[0].email == "customer@pmrg.in"), customers[0][0])
+
+        # Job 1: Rahul Kumar en route to demo customer Rohan Mehta in Bandra West
+        t1 = db.query(Ticket).filter(Ticket.customer_id == demo_cust.id).first()
+        if not t1:
+            t1 = Ticket(
+                market_id="mumbai",
+                ticket_code="TKT-MUM-10245",
+                source="CUSTOMER",
+                region="Bandra West",
+                customer_id=demo_cust.id,
+                node_id=demo_cust.node_id,
+                category="Hardware",
+                priority="P2",
+                status="In-Progress",
+                description="ONT optical loss alarm: Optical fiber splice attenuation degraded (-28.4 dBm). Customer experiencing high packet loss.",
+                ai_triage_action="Dispatched regional field engineer Rahul Kumar",
+                sla_deadline=now + timedelta(hours=3, minutes=15),
+                assigned_resource_id=rahul.id,
+                assigned_at=now - timedelta(minutes=25),
+                approval_status="APPROVED",
+                created_at=now - timedelta(hours=1)
+            )
+            db.add(t1)
+            db.flush()
+        else:
+            t1.assigned_resource_id = rahul.id
+            t1.assigned_at = now - timedelta(minutes=25)
+            t1.status = "In-Progress"
+            t1.approval_status = "APPROVED"
+
+        fa1 = FieldAssignment(
+            market_id="mumbai",
+            ticket_id=t1.id,
+            engineer_id=rahul.id,
+            status="EN_ROUTE",
+            assigned_at=now - timedelta(minutes=25),
+            accepted_at=now - timedelta(minutes=20),
+            en_route_at=now - timedelta(minutes=15),
+            notes="Transit initiated from Bandra Link Hub via S.V. Road"
+        )
+        db.add(fa1)
+        db.flush()
+
+        ts1 = TrackingSession(
+            market_id="mumbai",
+            field_assignment_id=fa1.id,
+            engineer_id=rahul.id,
+            status="ACTIVE",
+            started_at=now - timedelta(minutes=15),
+            last_location_at=now - timedelta(seconds=12)
+        )
+        db.add(ts1)
+        db.flush()
+
+        # Seed breadcrumb pings approaching Bandra West customer
+        route_pings = [
+            (19.0544, 72.8398, 22.0, 310.0, 15),
+            (19.0560, 72.8370, 26.5, 305.0, 12),
+            (19.0575, 72.8340, 24.0, 290.0, 8),
+            (19.0588, 72.8315, 18.5, 280.0, 4),
+            (19.0592, 72.8300, 15.0, 275.0, 1),
+        ]
+        for p_lat, p_lon, spd, hdg, mins_ago in route_pings:
+            ping = LocationPing(
+                tracking_session_id=ts1.id,
+                engineer_id=rahul.id,
+                market_id="mumbai",
+                latitude=p_lat,
+                longitude=p_lon,
+                accuracy=6.5,
+                speed=spd,
+                heading=hdg,
+                recorded_at=now - timedelta(minutes=mins_ago),
+                received_at=now - timedelta(minutes=mins_ago)
+            )
+            db.add(ping)
+
+        rahul.current_latitude = 19.0592
+        rahul.current_longitude = 72.8300
+        rahul.last_ping_at = now - timedelta(minutes=1)
+        rahul.location_status = "ACTIVE"
+        rahul.active_tickets_count = 1
+
+        # Job 2: Amit Sharma on-site and working in Andheri East
+        andheri_cust = next((c[0] for c in customers if c[0].locality == "Andheri East" and c[0].id != demo_cust.id), customers[1][0])
+        t2 = db.query(Ticket).filter(Ticket.customer_id == andheri_cust.id).first()
+        if not t2:
+            t2 = Ticket(
+                market_id="mumbai",
+                ticket_code="TKT-MUM-10251",
+                source="CUSTOMER",
+                region="Andheri East",
+                customer_id=andheri_cust.id,
+                node_id=andheri_cust.node_id,
+                category="Speed",
+                priority="P3",
+                status="In-Progress",
+                description="Subscriber broadband throughput fluctuating below 15 Mbps. Router ONT optical recalibration needed.",
+                ai_triage_action="Assigned to Amit Sharma (Andheri East)",
+                sla_deadline=now + timedelta(hours=4),
+                assigned_resource_id=amit.id,
+                assigned_at=now - timedelta(minutes=65),
+                approval_status="NOT_REQUIRED",
+                created_at=now - timedelta(hours=2)
+            )
+            db.add(t2)
+            db.flush()
+        else:
+            t2.assigned_resource_id = amit.id
+            t2.assigned_at = now - timedelta(minutes=65)
+            t2.status = "In-Progress"
+
+        fa2 = FieldAssignment(
+            market_id="mumbai",
+            ticket_id=t2.id,
+            engineer_id=amit.id,
+            status="WORKING",
+            assigned_at=now - timedelta(minutes=65),
+            accepted_at=now - timedelta(minutes=55),
+            en_route_at=now - timedelta(minutes=45),
+            arrived_at=now - timedelta(minutes=25),
+            work_started_at=now - timedelta(minutes=20),
+            notes="Technician arrived on-site; optical fiber clean and power meter testing in progress."
+        )
+        db.add(fa2)
+        db.flush()
+
+        ts2 = TrackingSession(
+            market_id="mumbai",
+            field_assignment_id=fa2.id,
+            engineer_id=amit.id,
+            status="ACTIVE",
+            started_at=now - timedelta(minutes=45),
+            last_location_at=now - timedelta(minutes=5)
+        )
+        db.add(ts2)
+        db.flush()
+
+        # Location at customer premises
+        ping2 = LocationPing(
+            tracking_session_id=ts2.id,
+            engineer_id=amit.id,
+            market_id="mumbai",
+            latitude=19.1136,
+            longitude=72.8697,
+            accuracy=5.0,
+            speed=0.0,
+            heading=0.0,
+            recorded_at=now - timedelta(minutes=5),
+            received_at=now - timedelta(minutes=5)
+        )
+        db.add(ping2)
+
+        amit.current_latitude = 19.1136
+        amit.current_longitude = 72.8697
+        amit.last_ping_at = now - timedelta(minutes=5)
+        amit.location_status = "ACTIVE"
+        amit.active_tickets_count = 1
+
+    else:
+        # Kolkata field assignments
+        priya = next((r for r in resources if r.name == "Priya Singh"), resources[0])
+        vikas = next((r for r in resources if r.name == "Vikas Kumar"), resources[1])
+
+        kol_cust1 = customers[0][0]
+        t_kol1 = db.query(Ticket).filter(Ticket.customer_id == kol_cust1.id).first()
+        if not t_kol1:
+            t_kol1 = Ticket(
+                market_id="kolkata",
+                ticket_code="TKT-KOL-10266",
+                source="CUSTOMER",
+                region="Salt Lake Sector V",
+                customer_id=kol_cust1.id,
+                node_id=kol_cust1.node_id,
+                category="Hardware",
+                priority="P2",
+                status="In-Progress",
+                description="FDH splitter port reflection detected. Field patchcord replacement required.",
+                ai_triage_action="Dispatched Priya Singh (Salt Lake)",
+                sla_deadline=now + timedelta(hours=2, minutes=45),
+                assigned_resource_id=priya.id,
+                assigned_at=now - timedelta(minutes=20),
+                approval_status="APPROVED",
+                created_at=now - timedelta(hours=1)
+            )
+            db.add(t_kol1)
+            db.flush()
+        else:
+            t_kol1.assigned_resource_id = priya.id
+            t_kol1.assigned_at = now - timedelta(minutes=20)
+            t_kol1.status = "In-Progress"
+
+        fa_kol1 = FieldAssignment(
+            market_id="kolkata",
+            ticket_id=t_kol1.id,
+            engineer_id=priya.id,
+            status="EN_ROUTE",
+            assigned_at=now - timedelta(minutes=20),
+            accepted_at=now - timedelta(minutes=16),
+            en_route_at=now - timedelta(minutes=10),
+            notes="En route to Salt Lake Sector V IT Hub"
+        )
+        db.add(fa_kol1)
+        db.flush()
+
+        ts_kol1 = TrackingSession(
+            market_id="kolkata",
+            field_assignment_id=fa_kol1.id,
+            engineer_id=priya.id,
+            status="ACTIVE",
+            started_at=now - timedelta(minutes=10),
+            last_location_at=now - timedelta(seconds=25)
+        )
+        db.add(ts_kol1)
+        db.flush()
+
+        ping_kol = LocationPing(
+            tracking_session_id=ts_kol1.id,
+            engineer_id=priya.id,
+            market_id="kolkata",
+            latitude=22.5830,
+            longitude=88.4210,
+            accuracy=7.0,
+            speed=28.0,
+            heading=320.0,
+            recorded_at=now - timedelta(minutes=2),
+            received_at=now - timedelta(minutes=2)
+        )
+        db.add(ping_kol)
+
+        priya.current_latitude = 22.5830
+        priya.current_longitude = 88.4210
+        priya.last_ping_at = now - timedelta(minutes=2)
+        priya.location_status = "ACTIVE"
+        priya.active_tickets_count = 1
 
     db.commit()
     print(f"[COMPLETED] Seeded {market_id} dataset.")

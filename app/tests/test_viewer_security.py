@@ -159,7 +159,7 @@ def test_security_headers_and_csp():
     assert headers.get("X-Content-Type-Options") == "nosniff"
     assert headers.get("X-Frame-Options") == "DENY"
     assert headers.get("Referrer-Policy") == "strict-origin-when-cross-origin"
-    assert "geolocation=()" in headers.get("Permissions-Policy", "")
+    assert "geolocation=(self)" in headers.get("Permissions-Policy", "")
     assert "Content-Security-Policy" in headers
     csp = headers.get("Content-Security-Policy")
     assert "default-src 'self'" in csp
@@ -223,15 +223,14 @@ def test_privilege_escalation_attacks_prevented():
     assert res_c.status_code == 403
 
     # Attack D: Mass assignment / role injection during signup
-    # Even if an attacker explicitly submits role="Admin" in public signup, system forces "Viewer"
+    # Privileged roles like "Admin" cannot be self-registered (Section 6 & Issue #1 fix: returns 403 Forbidden)
     signup_res = client.post("/api/auth/signup", json={
         "email": f"attacker_{client_ip_hash()}@pmrg.in",
         "password": "SecurePassword123!",
         "full_name": "Attacker Role Injection",
         "role": "Admin"
     })
-    assert signup_res.status_code == 201
-    assert signup_res.json()["role"] == "Viewer"
+    assert signup_res.status_code == 403
 
     # Attack E: Direct access to admin-only API
     res_e = client.get("/api/auth/users", headers={"Authorization": f"Bearer {token}"})

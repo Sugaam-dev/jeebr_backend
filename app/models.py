@@ -76,6 +76,9 @@ class Customer(Base):
     node_id = Column(Integer, ForeignKey('nodes.id'), nullable=True)
     current_stage = Column(String(50), default='Use')  # Acquisition, Install, Use, Renewal, Complaint, Win-back
     nps_score = Column(Integer, default=8)  # 1 to 10
+    service_latitude = Column(Float, nullable=True)
+    service_longitude = Column(Float, nullable=True)
+    service_address = Column(String(255), nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
 
     # Relationships
@@ -115,10 +118,18 @@ class Resource(Base):
     status = Column(String(50), default='Available')  # Available, Busy, Offline
     active_tickets_count = Column(Integer, default=0)
     max_capacity = Column(Integer, default=5)
+    user_id = Column(Integer, ForeignKey('users.id'), nullable=True)
+    current_latitude = Column(Float, nullable=True)
+    current_longitude = Column(Float, nullable=True)
+    last_ping_at = Column(DateTime, nullable=True)
+    location_status = Column(String(50), default='UNAVAILABLE')  # ACTIVE, STALE, UNAVAILABLE
     created_at = Column(DateTime, default=datetime.utcnow)
 
     # Relationships
+    user = relationship('User', foreign_keys=[user_id])
     tickets = relationship('Ticket', back_populates='assigned_resource')
+    field_assignments = relationship('FieldAssignment', back_populates='engineer', cascade='all, delete-orphan')
+    tracking_sessions = relationship('TrackingSession', back_populates='engineer', cascade='all, delete-orphan')
 
 
 class Ticket(Base):
@@ -154,6 +165,7 @@ class Ticket(Base):
     assigned_resource = relationship('Resource', back_populates='tickets')
     approved_by = relationship('User', foreign_keys=[approved_by_id])
     call_logs = relationship('ApprovalCallLog', back_populates='ticket', cascade='all, delete-orphan')
+    field_assignment = relationship('FieldAssignment', back_populates='ticket', uselist=False, cascade='all, delete-orphan')
 
 
 class Invoice(Base):
@@ -244,3 +256,135 @@ class ApprovalCallLog(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
 
     ticket = relationship('Ticket', back_populates='call_logs')
+
+
+class FieldAssignment(Base):
+    __tablename__ = 'field_assignments'
+
+    id = Column(Integer, primary_key=True, index=True)
+    market_id = Column(String(50), default='mumbai', index=True, nullable=False)
+    ticket_id = Column(Integer, ForeignKey('tickets.id', ondelete='CASCADE'), unique=True, index=True, nullable=False)
+    engineer_id = Column(Integer, ForeignKey('resources.id', ondelete='CASCADE'), index=True, nullable=False)
+    status = Column(String(50), default='ASSIGNED', index=True, nullable=False)
+    # Lifecycle states: ASSIGNED, ACCEPTED, EN_ROUTE, ARRIVED, WORKING, OTP_REQUESTED, OTP_VERIFIED, COMPLETED, REJECTED, CANCELLED, ON_HOLD, FAILED, REASSIGNED
+    assigned_at = Column(DateTime, default=datetime.utcnow)
+    accepted_at = Column(DateTime, nullable=True)
+    en_route_at = Column(DateTime, nullable=True)
+    arrived_at = Column(DateTime, nullable=True)
+    work_started_at = Column(DateTime, nullable=True)
+    otp_requested_at = Column(DateTime, nullable=True)
+    otp_verified_at = Column(DateTime, nullable=True)
+    completed_at = Column(DateTime, nullable=True)
+    notes = Column(Text, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    # Relationships
+    ticket = relationship('Ticket', back_populates='field_assignment')
+    engineer = relationship('Resource', back_populates='field_assignments')
+    tracking_sessions = relationship('TrackingSession', back_populates='field_assignment', cascade='all, delete-orphan')
+    otps = relationship('FieldOtp', back_populates='field_assignment', cascade='all, delete-orphan')
+
+
+class TrackingSession(Base):
+    __tablename__ = 'tracking_sessions'
+
+    id = Column(Integer, primary_key=True, index=True)
+    market_id = Column(String(50), default='mumbai', index=True, nullable=False)
+    field_assignment_id = Column(Integer, ForeignKey('field_assignments.id', ondelete='CASCADE'), index=True, nullable=False)
+    engineer_id = Column(Integer, ForeignKey('resources.id', ondelete='CASCADE'), index=True, nullable=False)
+    status = Column(String(50), default='ACTIVE', index=True, nullable=False)  # ACTIVE, STOPPED, PAUSED
+    started_at = Column(DateTime, default=datetime.utcnow)
+    ended_at = Column(DateTime, nullable=True)
+    last_location_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    # Relationships
+    field_assignment = relationship('FieldAssignment', back_populates='tracking_sessions')
+    engineer = relationship('Resource', back_populates='tracking_sessions')
+    pings = relationship('LocationPing', back_populates='tracking_session', cascade='all, delete-orphan')
+
+
+class LocationPing(Base):
+    __tablename__ = 'location_pings'
+
+    id = Column(Integer, primary_key=True, index=True)
+    tracking_session_id = Column(Integer, ForeignKey('tracking_sessions.id', ondelete='CASCADE'), index=True, nullable=False)
+    engineer_id = Column(Integer, ForeignKey('resources.id', ondelete='CASCADE'), index=True, nullable=False)
+    market_id = Column(String(50), default='mumbai', index=True, nullable=False)
+    latitude = Column(Float, nullable=False)
+    longitude = Column(Float, nullable=False)
+    accuracy = Column(Float, default=10.0)  # accuracy radius in meters
+    speed = Column(Float, default=0.0)  # speed in km/h or m/s
+    heading = Column(Float, default=0.0)  # degrees 0-360
+    recorded_at = Column(DateTime, default=datetime.utcnow, index=True)
+    received_at = Column(DateTime, default=datetime.utcnow)
+    is_mock = Column(Boolean, default=False, nullable=False, index=True)
+
+    # Relationships
+    tracking_session = relationship('TrackingSession', back_populates='pings')
+    engineer = relationship('Resource')
+
+
+class FieldOtp(Base):
+    __tablename__ = 'field_otps'
+
+    id = Column(Integer, primary_key=True, index=True)
+    field_assignment_id = Column(Integer, ForeignKey('field_assignments.id', ondelete='CASCADE'), index=True, nullable=False)
+    ticket_id = Column(Integer, ForeignKey('tickets.id', ondelete='CASCADE'), index=True, nullable=False)
+    customer_id = Column(Integer, ForeignKey('customers.id', ondelete='CASCADE'), index=True, nullable=False)
+    otp_hash = Column(String(255), nullable=False)  # Salted PBKDF2/SHA-256 hash; RAW OTP NEVER STORED
+    salt = Column(String(64), nullable=False)
+    dispatch_code = Column(String(16), nullable=True)  # Secure dispatch token for customer self-service retrieval
+    expires_at = Column(DateTime, nullable=False)
+    attempts = Column(Integer, default=0)
+    is_used = Column(Boolean, default=False)
+    is_locked = Column(Boolean, default=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    verified_at = Column(DateTime, nullable=True)
+
+    # Relationships
+    field_assignment = relationship('FieldAssignment', back_populates='otps')
+    ticket = relationship('Ticket')
+    customer = relationship('Customer')
+
+
+class Role(Base):
+    __tablename__ = 'roles'
+
+    id = Column(Integer, primary_key=True, index=True)
+    name = Column(String(50), unique=True, index=True, nullable=False)
+    display_name = Column(String(100), nullable=False)
+    description = Column(Text, nullable=True)
+    rank = Column(Integer, default=50, nullable=False)  # 100: Super Admin, 80: Admin, 50: Operational, 20: Customer, 10: Viewer
+    is_system = Column(Boolean, default=False, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    # Relationships
+    permissions = relationship('RolePermission', back_populates='role', cascade='all, delete-orphan')
+
+
+class Permission(Base):
+    __tablename__ = 'permissions'
+
+    id = Column(Integer, primary_key=True, index=True)
+    code = Column(String(100), unique=True, index=True, nullable=False)
+    name = Column(String(100), nullable=False)
+    category = Column(String(50), nullable=False)
+    description = Column(Text, nullable=True)
+
+    # Relationships
+    role_permissions = relationship('RolePermission', back_populates='permission', cascade='all, delete-orphan')
+
+
+class RolePermission(Base):
+    __tablename__ = 'role_permissions'
+
+    id = Column(Integer, primary_key=True, index=True)
+    role_id = Column(Integer, ForeignKey('roles.id', ondelete='CASCADE'), index=True, nullable=False)
+    permission_code = Column(String(100), ForeignKey('permissions.code', ondelete='CASCADE'), index=True, nullable=False)
+
+    # Relationships
+    role = relationship('Role', back_populates='permissions')
+    permission = relationship('Permission', back_populates='role_permissions')
+

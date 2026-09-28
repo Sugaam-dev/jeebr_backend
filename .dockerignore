@@ -24,5 +24,10 @@ htmlcov/
 
 # Tests & temporary files
 tests/
+app/tests/
 scratch/
 *.log
+
+# Database local files
+*.sqlite3
+*.db

@@ -61,7 +61,7 @@ def get_current_user(
         headers={"WWW-Authenticate": "Bearer"},
     )
     
-    # 1. Prefer Authorization: Bearer <token>, fallback to HttpOnly cookie "access_token"
+    # 1. Prefer Authorization: Bearer <token>, fallback to HttpOnly cookie "access_token", then ?token= query param
     token = None
     if credentials and credentials.credentials:
         token = credentials.credentials
@@ -69,6 +69,10 @@ def get_current_user(
         cookie_token = request.cookies.get("access_token")
         if cookie_token:
             token = cookie_token
+        else:
+            query_token = request.query_params.get("token")
+            if query_token:
+                token = query_token
 
     if not token:
         raise credentials_exception
@@ -94,7 +98,7 @@ def get_current_user(
         raise credentials_exception
     return user
 
-SUPPORTED_ROLES = ["Executive", "NOC", "Care", "Revenue", "Admin", "Viewer"]
+SUPPORTED_ROLES = ["SUPER_ADMIN", "Super Admin", "Executive", "NOC", "Care", "Revenue", "Admin", "Viewer", "Field Engineer", "Customer"]
 
 # In-memory rate limiting tracker for login attempts (composite key: IP + email)
 _FAILED_ATTEMPTS: dict[str, list[datetime]] = {}
@@ -174,7 +178,20 @@ def require_roles(allowed_roles: List[str]):
         current_user: User = Depends(get_current_user),
         db: Session = Depends(get_db)
     ) -> User:
-        if current_user.role == "Admin" or current_user.role in allowed_roles:
+        from app.services.rbac_service import normalize_role_name, is_super_admin
+        norm_user_role = normalize_role_name(current_user.role)
+        norm_allowed = [normalize_role_name(r) for r in allowed_roles]
+
+        # 1. Super Admin has unrestricted authority across all operational endpoints
+        if is_super_admin(current_user.role):
+            return current_user
+
+        # 2. Admin has general operational management authority
+        if norm_user_role == "Admin" and ("SUPER_ADMIN" not in norm_allowed or "Admin" in norm_allowed):
+            return current_user
+
+        # 3. Match normalized role in allowed roles
+        if norm_user_role in norm_allowed:
             return current_user
         
         # Log ACCESS_DENIED security event
@@ -191,12 +208,59 @@ def require_roles(allowed_roles: List[str]):
         )
     return role_checker
 
+def require_permission(permission_code: str):
+    """Enforce granular permission check backed by database and registry."""
+    def permission_checker(
+        current_user: User = Depends(get_current_user),
+        db: Session = Depends(get_db)
+    ) -> User:
+        from app.services.rbac_service import user_has_permission, is_super_admin
+        if is_super_admin(current_user.role):
+            return current_user
+        
+        if user_has_permission(db, current_user, permission_code):
+            return current_user
+
+        log_security_event(
+            db=db,
+            action=f"Access denied: missing permission '{permission_code}' for user '{current_user.email}' ({current_user.role})",
+            decision="ACCESS_DENIED",
+            user=current_user,
+            details={"required_permission": permission_code, "user_role": current_user.role}
+        )
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=f"Access forbidden: requires permission '{permission_code}'"
+        )
+    return permission_checker
+
+def require_super_admin(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+) -> User:
+    """Enforce strict Super Admin privilege level (rank 100). Rejects Admin and lower roles."""
+    from app.services.rbac_service import is_super_admin
+    if not is_super_admin(current_user.role):
+        log_security_event(
+            db=db,
+            action=f"Forbidden Super Admin operation attempt by user '{current_user.email}' ({current_user.role})",
+            decision="ACCESS_DENIED",
+            user=current_user,
+            details={"required": "SUPER_ADMIN", "actual": current_user.role}
+        )
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Forbidden: This operation strictly requires Super Administrator privileges."
+        )
+    return current_user
+
 def require_not_viewer(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ) -> User:
     """Enforce that Viewer account cannot perform mutation actions."""
-    if current_user.role == "Viewer":
+    from app.services.rbac_service import normalize_role_name
+    if normalize_role_name(current_user.role) == "Viewer":
         log_security_event(
             db=db,
             action="Viewer mutation attempt blocked (read-only enforcement)",
@@ -209,3 +273,15 @@ def require_not_viewer(
             detail="Access forbidden: Viewer account has read-only permissions."
         )
     return current_user
+
+def require_field_engineer(current_user: User = Depends(get_current_user)) -> User:
+    """Enforce Field Engineer role. Derives resource identity from JWT — never from request body."""
+    from app.services.rbac_service import normalize_role_name, is_admin_or_super
+    norm_role = normalize_role_name(current_user.role)
+    if not is_admin_or_super(norm_role) and norm_role != "Field Engineer":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Field Engineer access required"
+        )
+    return current_user
+

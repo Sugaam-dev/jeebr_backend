@@ -1,9 +1,9 @@
 from typing import List, Optional
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import case, func
 from sqlalchemy.orm import Session, selectinload, joinedload
 from app.database import get_db
-from app.models import Ticket, Resource, User
+from app.models import Ticket, Resource, User, Customer
 from app.schemas import (
     TicketCreateRequest, TicketDetailResponse, TicketApproveRequest,
     TicketRejectRequest, TicketResolveRequest, ResourceCreate, ResourceResponse,
@@ -13,6 +13,8 @@ from app.schemas import (
 )
 from app.auth import get_current_user, require_roles, require_not_viewer
 from app.markets import get_current_market
+from app.services.event_publisher import event_publisher
+from app.services.workload_service import emit_workload_update_event, get_active_jobs_count
 from app.services.ticketing_engine import (
     create_and_dispatch_ticket,
     approve_and_assign_ticket,
@@ -49,7 +51,7 @@ def get_tickets(
     current_user: User = Depends(get_current_user),
     market: str = Depends(get_current_market)
 ):
-    """List tickets for current market with optional filters."""
+    """List tickets for current market with optional filters and resource scope enforcement."""
     query = db.query(Ticket).options(
         selectinload(Ticket.assigned_resource),
         selectinload(Ticket.customer),
@@ -57,6 +59,27 @@ def get_tickets(
         selectinload(Ticket.approved_by),
         selectinload(Ticket.call_logs)
     ).filter(Ticket.market_id == market)
+
+    # Resource Scope Enforcement (Section 12)
+    if current_user.role == "Customer":
+        # Strict subscriber isolation: customer only sees their own registered tickets
+        cust_records = db.query(Customer.id).filter(
+            func.lower(Customer.email) == current_user.email.lower().strip()
+        ).all()
+        cust_ids = [c[0] for c in cust_records]
+        if cust_ids:
+            query = query.filter(Ticket.customer_id.in_(cust_ids))
+        else:
+            return []
+    elif current_user.role == "Field Engineer":
+        # Strict field engineer isolation: engineer only sees jobs assigned to them
+        eng = db.query(Resource).filter(
+            func.lower(Resource.email) == current_user.email.lower().strip()
+        ).first()
+        if eng:
+            query = query.filter(Ticket.assigned_resource_id == eng.id)
+        else:
+            return []
 
     if resource_id:
         query = query.filter(Ticket.assigned_resource_id == resource_id)
@@ -73,7 +96,7 @@ def get_tickets(
 
     order_expr = case(
         (Ticket.approval_status == 'PENDING_APPROVAL', 0),
-        (Ticket.status.in_(['Open', 'Assigned', 'In-Progress']), 1),
+        (Ticket.status.in_(['Open', 'Assigned', 'In-Progress', 'In Progress']), 1),
         else_=2
     )
     tickets = query.order_by(order_expr, Ticket.created_at.desc()).limit(limit).all()
@@ -81,7 +104,7 @@ def get_tickets(
 
 
 @router.post("", response_model=TicketDetailResponse)
-def raise_ticket(
+async def raise_ticket(
     req: TicketCreateRequest,
     db: Session = Depends(get_db),
     current_user: User = Depends(require_not_viewer),
@@ -89,16 +112,28 @@ def raise_ticket(
 ):
     """
     Raise a new ticket.
-    Triggers automated dispatch:
-    - Internal tickets auto-assigned to internal team.
-    - P3/P4 tickets auto-assigned to matching regional resource without approval.
-    - P1/P2 tickets placed in PENDING_APPROVAL.
+    Triggers automated dispatch and broadcasts SSE event across channels.
     """
     try:
         ticket = create_and_dispatch_ticket(db, req, market_id=market, user=current_user)
+        # Broadcast real-time SSE creation event (Issue #2 & Section 17)
+        create_event = {
+            "event": "ticket_created",
+            "ticket_id": ticket.id,
+            "ticket_code": ticket.ticket_code,
+            "priority": ticket.priority,
+            "status": ticket.status,
+            "region": ticket.region,
+            "timestamp": datetime.utcnow().isoformat()
+        }
+        await event_publisher.publish(f"market:{market.lower()}", create_event)
+        await event_publisher.publish(f"ticket:{ticket.id}", create_event)
         return build_ticket_detail_response(ticket)
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
+
 
 
 @router.get("/stats", response_model=TicketingStatsResponse)
@@ -374,7 +409,7 @@ def get_ticket(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
-    """Get single ticket details."""
+    """Get single ticket details with resource-scope enforcement (Section 12)."""
     ticket = db.query(Ticket).options(
         selectinload(Ticket.assigned_resource),
         selectinload(Ticket.customer),
@@ -384,11 +419,33 @@ def get_ticket(
     ).filter(Ticket.id == ticket_id).first()
     if not ticket:
         raise HTTPException(status_code=404, detail="Ticket not found")
+
+    # Resource-Scope Authorization
+    if current_user.role == "Customer":
+        cust_records = db.query(Customer.id).filter(
+            func.lower(Customer.email) == current_user.email.lower().strip()
+        ).all()
+        cust_ids = [c[0] for c in cust_records]
+        if not ticket.customer_id or ticket.customer_id not in cust_ids:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Forbidden: You can only view your own tickets."
+            )
+    elif current_user.role == "Field Engineer":
+        eng = db.query(Resource).filter(
+            func.lower(Resource.email) == current_user.email.lower().strip()
+        ).first()
+        if not eng or ticket.assigned_resource_id != eng.id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Forbidden: You can only view your own assigned jobs."
+            )
+
     return build_ticket_detail_response(ticket)
 
 
 @router.post("/{ticket_id}/approve", response_model=TicketDetailResponse)
-def approve_ticket(
+async def approve_ticket(
     ticket_id: int,
     req: TicketApproveRequest,
     db: Session = Depends(get_db),
@@ -397,6 +454,7 @@ def approve_ticket(
     """
     Approve a P1/P2 ticket.
     Supports manual technician override or automated regional field dispatch.
+    Strictly enforces capacity limits (409 Conflict if at capacity) and emits SSE events.
     """
     try:
         updated = approve_and_assign_ticket(
@@ -406,7 +464,29 @@ def approve_ticket(
             notes=req.notes,
             resource_id=req.resource_id
         )
+
+        # Broadcast SSE event across channels (Section 17)
+        appr_event = {
+            "event": "ticket_approved",
+            "ticket_id": updated.id,
+            "ticket_code": updated.ticket_code,
+            "status": updated.status,
+            "assigned_resource_id": updated.assigned_resource_id,
+            "assigned_resource_name": updated.assigned_resource.name if updated.assigned_resource else None,
+            "region": updated.region,
+            "timestamp": datetime.utcnow().isoformat()
+        }
+        await event_publisher.publish(f"ticket:{updated.id}", appr_event)
+        await event_publisher.publish(f"market:{updated.market_id.lower()}", appr_event)
+
+        if updated.assigned_resource_id:
+            res = updated.assigned_resource
+            if res:
+                await emit_workload_update_event(updated.market_id, res.id, res.active_tickets_count, res.max_capacity)
+
         return build_ticket_detail_response(updated)
+    except HTTPException:
+        raise
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
     except Exception as e:
@@ -414,7 +494,7 @@ def approve_ticket(
 
 
 @router.post("/{ticket_id}/reject", response_model=TicketDetailResponse)
-def reject_ticket_endpoint(
+async def reject_ticket_endpoint(
     ticket_id: int,
     req: TicketRejectRequest,
     db: Session = Depends(get_db),
@@ -423,7 +503,18 @@ def reject_ticket_endpoint(
     """Reject approval for a ticket."""
     try:
         updated = reject_ticket(db, ticket_id, current_user, notes=req.notes)
+        rej_event = {
+            "event": "ticket_rejected",
+            "ticket_id": updated.id,
+            "ticket_code": updated.ticket_code,
+            "status": updated.status,
+            "timestamp": datetime.utcnow().isoformat()
+        }
+        await event_publisher.publish(f"ticket:{updated.id}", rej_event)
+        await event_publisher.publish(f"market:{updated.market_id.lower()}", rej_event)
         return build_ticket_detail_response(updated)
+    except HTTPException:
+        raise
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
     except Exception as e:
@@ -431,7 +522,7 @@ def reject_ticket_endpoint(
 
 
 @router.post("/{ticket_id}/resolve", response_model=TicketDetailResponse)
-def resolve_ticket_endpoint(
+async def resolve_ticket_endpoint(
     ticket_id: int,
     req: TicketResolveRequest,
     db: Session = Depends(get_db),
@@ -439,10 +530,35 @@ def resolve_ticket_endpoint(
 ):
     """Mark ticket as resolved and release resource workload capacity."""
     try:
+        res_id = None
+        ticket_before = db.query(Ticket).filter(Ticket.id == ticket_id).first()
+        if ticket_before:
+            res_id = ticket_before.assigned_resource_id
+
         updated = resolve_ticket(db, ticket_id, current_user, notes=req.notes)
+        res_event = {
+            "event": "ticket_resolved",
+            "ticket_id": updated.id,
+            "ticket_code": updated.ticket_code,
+            "status": updated.status,
+            "timestamp": datetime.utcnow().isoformat()
+        }
+        await event_publisher.publish(f"ticket:{updated.id}", res_event)
+        await event_publisher.publish(f"market:{updated.market_id.lower()}", res_event)
+
+        if res_id:
+            res = db.query(Resource).filter(Resource.id == res_id).first()
+            if res:
+                await emit_workload_update_event(updated.market_id, res.id, res.active_tickets_count, res.max_capacity)
+
         return build_ticket_detail_response(updated)
+    except HTTPException:
+        raise
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
 
