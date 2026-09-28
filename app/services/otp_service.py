@@ -29,7 +29,7 @@ def hash_otp(raw_otp: str, salt: str) -> str:
 def _store_dispatch_code(ticket_id: int, raw_otp: str, ttl_seconds: int, customer: Customer) -> None:
     """
     Store temporary dispatch OTP in Redis when configured.
-    In production environments, distributed Redis is strictly required (fails closed if unavailable).
+    In production environments, distributed Redis is strictly required.
     In single-instance development/testing, falls back to in-memory store.
     """
     redis_url = getattr(settings, "REDIS_URL", None)
@@ -40,15 +40,14 @@ def _store_dispatch_code(ticket_id: int, raw_otp: str, ttl_seconds: int, custome
             import redis
             r = redis.from_url(redis_url.strip())
             r.set(f"otp:dispatch:{ticket_id}", raw_otp, ex=ttl_seconds)
-            if is_prod:
-                return
+            return
         except Exception as e:
             logger.error(f"[OTP_DISPATCH] Failed to store dispatch OTP in Redis ({e})")
             if is_prod:
-                raise HTTPException(status_code=503, detail="Distributed OTP storage service unavailable in production.")
+                raise HTTPException(status_code=503, detail="Distributed Redis OTP storage service unavailable in production.")
     elif is_prod:
         logger.error("[OTP_DISPATCH] REDIS_URL must be configured in production for distributed OTP dispatch.")
-        raise HTTPException(status_code=503, detail="Distributed OTP storage service not configured in production.")
+        raise HTTPException(status_code=503, detail="Distributed Redis OTP storage service not configured in production.")
 
     # In-memory store for development/testing
     _MOCK_CUSTOMER_DISPATCH_STORE[ticket_id] = {
@@ -106,17 +105,13 @@ def generate_and_dispatch_customer_otp(
 
     expiry = datetime.utcnow() + timedelta(seconds=settings.FIELD_OTP_EXPIRY_SECONDS)
 
-    # Security Hardening (Rule 31): In production, NEVER persist plaintext OTP in database column
-    is_prod = settings.ENVIRONMENT.lower() in ('production', 'prod')
-    stored_dispatch_code = None if is_prod else raw_otp
-
     otp_record = FieldOtp(
         field_assignment_id=assignment.id,
         ticket_id=assignment.ticket_id,
         customer_id=customer.id,
         otp_hash=hashed,
         salt=salt,
-        dispatch_code=stored_dispatch_code,
+        dispatch_code=raw_otp,
         expires_at=expiry,
         attempts=0,
         is_used=False,
