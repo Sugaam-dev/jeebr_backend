@@ -45,6 +45,9 @@ class AdminUserCreateRequest(BaseModel):
     name: Optional[str] = None
     role: str = "Viewer"
     is_active: bool = True
+    phone: Optional[str] = None
+    region: Optional[str] = None
+    market_id: Optional[str] = None
 
     @model_validator(mode='after')
     def resolve_name(self):
@@ -59,6 +62,9 @@ class AdminUserUpdateRequest(BaseModel):
     name: Optional[str] = None
     role: Optional[str] = None
     is_active: Optional[bool] = None
+    phone: Optional[str] = None
+    region: Optional[str] = None
+    market_id: Optional[str] = None
 
 class UserStatusUpdateRequest(BaseModel):
     is_active: bool

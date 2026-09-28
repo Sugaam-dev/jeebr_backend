@@ -1,9 +1,12 @@
+from datetime import datetime
 from typing import List
 from fastapi import APIRouter, Depends, HTTPException, status, Response, Request
 from sqlalchemy.orm import Session
+from sqlalchemy import func
 from app.config import settings
 from app.database import get_db
-from app.models import User, Role
+from app.models import User, Role, Resource
+from app.markets import get_current_market
 from app.schemas import (
     Token, LoginRequest, SignupRequest, UserResponse,
     AdminUserCreateRequest, AdminUserUpdateRequest, UserStatusUpdateRequest
@@ -255,7 +258,8 @@ def get_users(
 def admin_create_user(
     req: AdminUserCreateRequest,
     db: Session = Depends(get_db),
-    current_user: User = Depends(require_roles(["Admin"]))
+    current_user: User = Depends(require_roles(["Admin"])),
+    current_market: str = Depends(get_current_market)
 ):
     target_role = normalize_role_name(req.role)
     target_rank = get_role_rank(target_role, db)
@@ -304,16 +308,59 @@ def admin_create_user(
 
     # 5. Persist user
     user_name = (req.full_name or req.name or "").strip()
+    phone_val = (req.phone or "+91 98200 12345").strip()
     new_user = User(
         email=clean_email,
         hashed_password=hash_password(req.password),
         full_name=user_name,
         role=target_role,
+        phone=phone_val,
         is_active=bool(req.is_active)
     )
     db.add(new_user)
     db.commit()
     db.refresh(new_user)
+
+    # 6. Operational Workforce Synchronization:
+    # If the user is provisioned as 'Field Engineer', automatically provision/link
+    # their Resource record so they appear in technician selection and field dispatch.
+    if target_role == "Field Engineer":
+        market_val = (req.market_id or current_market or "mumbai").lower().strip()
+        if market_val not in ["mumbai", "kolkata"]:
+            market_val = "mumbai"
+        default_region = "Bandra West" if market_val == "mumbai" else "Salt Lake Sector V"
+        region_val = (req.region or default_region).strip()
+        coords = (19.0760, 72.8777) if market_val == "mumbai" else (22.5726, 88.3639)
+
+        existing_res = db.query(Resource).filter(
+            Resource.market_id == market_val,
+            (Resource.user_id == new_user.id) | (func.lower(Resource.email) == clean_email)
+        ).first()
+
+        if existing_res:
+            existing_res.user_id = new_user.id
+            existing_res.name = user_name
+            existing_res.phone = phone_val
+            existing_res.status = "Available" if new_user.is_active else "Offline"
+        else:
+            new_res = Resource(
+                market_id=market_val,
+                name=user_name,
+                email=clean_email,
+                phone=phone_val,
+                resource_type="FIELD",
+                region=region_val,
+                status="Available" if new_user.is_active else "Offline",
+                active_tickets_count=0,
+                max_capacity=5,
+                user_id=new_user.id,
+                current_latitude=coords[0],
+                current_longitude=coords[1],
+                last_ping_at=datetime.utcnow(),
+                location_status="ACTIVE"
+            )
+            db.add(new_res)
+        db.commit()
 
     log_security_event(
         db=db,
@@ -441,6 +488,47 @@ def admin_update_user(
             method="PUT"
         )
 
+    # Synchronize linked Resource records if applicable
+    linked_resources = db.query(Resource).filter(
+        (Resource.user_id == target_user.id) | (func.lower(Resource.email) == target_user.email.lower())
+    ).all()
+
+    for res in linked_resources:
+        if req.full_name is not None or req.name is not None:
+            res.name = target_user.full_name
+        if req.phone is not None:
+            res.phone = req.phone.strip()
+        if req.region is not None:
+            res.region = req.region.strip()
+        if req.role is not None:
+            if target_user.role == "Field Engineer":
+                res.status = "Available" if target_user.is_active else "Offline"
+            else:
+                res.status = "Offline"
+        if req.is_active is not None:
+            if target_user.role == "Field Engineer":
+                res.status = "Available" if target_user.is_active else "Offline"
+
+    if target_user.role == "Field Engineer" and not linked_resources:
+        default_region = "Bandra West"
+        new_res = Resource(
+            market_id=(req.market_id or "mumbai").lower().strip(),
+            name=target_user.full_name,
+            email=target_user.email.lower(),
+            phone=getattr(target_user, "phone", None) or "+91 98200 12345",
+            resource_type="FIELD",
+            region=req.region or default_region,
+            status="Available" if target_user.is_active else "Offline",
+            active_tickets_count=0,
+            max_capacity=5,
+            user_id=target_user.id,
+            current_latitude=19.0760,
+            current_longitude=72.8777,
+            last_ping_at=datetime.utcnow(),
+            location_status="ACTIVE"
+        )
+        db.add(new_res)
+
     db.commit()
     db.refresh(target_user)
 
@@ -478,6 +566,14 @@ def toggle_user_status(
         raise HTTPException(status_code=400, detail="Cannot disable your own user account.")
 
     target_user.is_active = bool(req.is_active)
+
+    # Sync linked Resource status
+    linked_resources = db.query(Resource).filter(
+        (Resource.user_id == target_user.id) | (func.lower(Resource.email) == target_user.email.lower())
+    ).all()
+    for res in linked_resources:
+        res.status = "Available" if target_user.is_active else "Offline"
+
     db.commit()
     db.refresh(target_user)
 

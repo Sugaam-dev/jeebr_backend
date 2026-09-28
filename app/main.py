@@ -1,4 +1,6 @@
-from fastapi import FastAPI
+import logging
+from fastapi import FastAPI, Request
+from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from app.config import settings
 from app.database import engine, Base
@@ -6,6 +8,8 @@ from app.routers import (
     auth, customers, assurance, churn, journeys, orchestration, revenue, governance, cockpit, pilot_bundle, ticketing, field_operations, olt_telemetry, rbac
 )
 from app import markets
+
+logger = logging.getLogger(__name__)
 
 # Create database tables
 Base.metadata.create_all(bind=engine)
@@ -94,6 +98,13 @@ def ensure_ticket_columns():
                     conn.commit()
                 except Exception:
                     pass
+
+            # Field OTPs dispatch_code column
+            try:
+                conn.execute(text("ALTER TABLE field_otps ADD COLUMN IF NOT EXISTS dispatch_code VARCHAR(16);"))
+                conn.commit()
+            except Exception:
+                pass
     except Exception:
         pass
 
@@ -113,14 +124,39 @@ app = FastAPI(
     openapi_url=f"{settings.API_V1_STR}/openapi.json"
 )
 
-# CORS Middleware
+# CORS Middleware - Explicit allowlist + dynamic Vercel wildcard regex
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.BACKEND_CORS_ORIGINS,
+    allow_origin_regex=r"^https?://.*\.vercel\.app$",
     allow_credentials=True,
-    allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    allow_methods=["*"],
     allow_headers=["*"],
 )
+
+@app.exception_handler(Exception)
+async def global_cors_exception_handler(request: Request, exc: Exception):
+    """Ensure CORS headers are attached even on unexpected 500 errors."""
+    logger.exception(f"Unhandled error processing {request.method} {request.url}: {exc}")
+    origin = request.headers.get("origin", "")
+    headers = {}
+    is_allowed = (
+        origin in settings.BACKEND_CORS_ORIGINS
+        or origin.endswith(".vercel.app")
+        or origin.startswith("http://localhost:")
+        or origin.startswith("http://127.0.0.1:")
+    )
+    if is_allowed and origin:
+        headers["Access-Control-Allow-Origin"] = origin
+        headers["Access-Control-Allow-Credentials"] = "true"
+        headers["Access-Control-Allow-Headers"] = "*"
+        headers["Access-Control-Allow-Methods"] = "*"
+
+    return JSONResponse(
+        status_code=500,
+        content={"detail": f"Internal Server Error: {str(exc)}"},
+        headers=headers
+    )
 
 # Security Headers & Content-Security-Policy Middleware
 @app.middleware("http")

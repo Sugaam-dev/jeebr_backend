@@ -4,6 +4,7 @@ from typing import List, Optional
 from datetime import datetime, timedelta
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from fastapi.responses import StreamingResponse
+from sqlalchemy import func
 from sqlalchemy.orm import Session, selectinload, joinedload
 from app.config import settings
 from app.database import get_db
@@ -47,13 +48,37 @@ def _resolve_engineer_resource(db: Session, user: User) -> Optional[Resource]:
     by_user = db.query(Resource).filter(Resource.user_id == user.id).first()
     if by_user:
         return by_user
-    # Fallback to email matching and bind user_id permanently if unbound
-    by_email = db.query(Resource).filter(Resource.email == user.email).first()
+    # Fallback to case-insensitive email matching and bind user_id permanently if unbound
+    by_email = db.query(Resource).filter(func.lower(Resource.email) == user.email.lower().strip()).first()
     if by_email:
         if by_email.user_id is None:
             by_email.user_id = user.id
             db.commit()
         return by_email
+
+    # Self-healing: If user is an active Field Engineer, auto-provision and link a Resource record
+    if user.role == "Field Engineer":
+        new_res = Resource(
+            market_id="mumbai",
+            name=user.full_name,
+            email=user.email.lower().strip(),
+            phone=getattr(user, "phone", None) or "+91 98200 12345",
+            resource_type="FIELD",
+            region="Bandra West",
+            status="Available" if user.is_active else "Offline",
+            active_tickets_count=0,
+            max_capacity=5,
+            user_id=user.id,
+            current_latitude=19.0760,
+            current_longitude=72.8777,
+            last_ping_at=datetime.utcnow(),
+            location_status="ACTIVE"
+        )
+        db.add(new_res)
+        db.commit()
+        db.refresh(new_res)
+        return new_res
+
     return None
 
 

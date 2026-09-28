@@ -233,6 +233,46 @@ def get_resources(
     market: str = Depends(get_current_market)
 ):
     """List team resources for the current market (Field Engineers & Internal NOC)."""
+    # Self-healing: Ensure any active user with 'Field Engineer' role has a Resource entity in this market
+    fe_users = db.query(User).filter(
+        User.role == "Field Engineer",
+        User.is_active == True
+    ).all()
+    if fe_users:
+        existing_res_records = db.query(Resource.user_id, func.lower(Resource.email)).filter(
+            Resource.market_id == market
+        ).all()
+        existing_uids = {r[0] for r in existing_res_records if r[0] is not None}
+        existing_emails = {r[1] for r in existing_res_records if r[1] is not None}
+
+        default_region = "Bandra West" if market == "mumbai" else "Salt Lake Sector V"
+        default_coords = (19.0760, 72.8777) if market == "mumbai" else (22.5726, 88.3639)
+        new_res_added = False
+
+        for u in fe_users:
+            if u.id not in existing_uids and u.email.lower() not in existing_emails:
+                res = Resource(
+                    market_id=market,
+                    name=u.full_name or u.email.split("@")[0],
+                    email=u.email.lower(),
+                    phone=getattr(u, "phone", None) or "+91 98200 12345",
+                    resource_type="FIELD",
+                    region=default_region,
+                    status="Available",
+                    active_tickets_count=0,
+                    max_capacity=5,
+                    user_id=u.id,
+                    current_latitude=default_coords[0],
+                    current_longitude=default_coords[1],
+                    last_ping_at=datetime.utcnow(),
+                    location_status="ACTIVE"
+                )
+                db.add(res)
+                new_res_added = True
+
+        if new_res_added:
+            db.commit()
+
     query = db.query(Resource).filter(Resource.market_id == market)
     if resource_type:
         query = query.filter(Resource.resource_type == resource_type.upper())
