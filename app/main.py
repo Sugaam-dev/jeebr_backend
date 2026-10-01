@@ -5,7 +5,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.config import settings
 from app.database import engine, Base
 from app.routers import (
-    auth, customers, assurance, churn, journeys, orchestration, revenue, governance, cockpit, pilot_bundle, ticketing, field_operations, olt_telemetry, rbac
+    auth, customers, assurance, churn, journeys, orchestration, revenue, governance, cockpit, pilot_bundle, ticketing, field_operations, olt_telemetry, rbac, network
 )
 from app import markets
 
@@ -207,6 +207,7 @@ app.include_router(field_operations.router, prefix=f"{settings.API_V1_STR}/field
 app.include_router(field_operations.router, prefix=f"{settings.API_V1_STR}/field")
 app.include_router(olt_telemetry.router, prefix=settings.API_V1_STR)
 app.include_router(rbac.router, prefix=settings.API_V1_STR)
+app.include_router(network.router, prefix=settings.API_V1_STR)
 
 @app.get("/")
 def root():

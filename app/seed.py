@@ -3,7 +3,8 @@ from datetime import datetime, timedelta
 from app.database import SessionLocal, engine, Base
 from app.models import (
     User, Node, Customer, UsageRecord, Ticket, Invoice, Recommendation, AuditLog, Resource,
-    FieldAssignment, TrackingSession, LocationPing, FieldOtp
+    FieldAssignment, TrackingSession, LocationPing, FieldOtp,
+    NetworkDevice, OLTPort, NetworkLink, NetworkAlarm
 )
 from app.auth import hash_password
 from app.services.rbac_service import ensure_rbac_seeded
@@ -15,7 +16,7 @@ def seed_database():
     from sqlalchemy import text
     try:
         with engine.connect() as conn:
-            conn.execute(text("TRUNCATE TABLE field_otps, location_pings, tracking_sessions, field_assignments, audit_logs, recommendations, invoices, tickets, usage_records, customers, resources, nodes, users CASCADE;"))
+            conn.execute(text("TRUNCATE TABLE network_alarms, network_links, olt_ports, network_devices, field_otps, location_pings, tracking_sessions, field_assignments, audit_logs, recommendations, invoices, tickets, usage_records, customers, resources, nodes, users CASCADE;"))
             conn.commit()
     except Exception as e:
         print(f"Note on truncate: {e}")
@@ -1047,8 +1048,296 @@ def seed_market_dataset(db, market_id: str, users: list):
         priya.location_status = "ACTIVE"
         priya.active_tickets_count = 1
 
+    # Phase 7B: Canonical OLT / ONT / ONU Network Topology Seeding
+    seed_network_topology(db, market_id, customers)
+
     db.commit()
     print(f"[COMPLETED] Seeded {market_id} dataset.")
+
+
+def seed_network_topology(db, market_id: str, customers: list):
+    """
+    Seed canonical Phase 7B/8 network topology and monitoring baseline:
+    OLT -> PON Port -> Fiber Cabinet -> Splitter -> ONT/ONU -> Customer
+    Links: Feeder, Distribution, Drop Cable.
+    Alarms: Optical attenuation, saturation.
+    Thresholds: Default metric alerts for OLT, ONT, Cabinets.
+    """
+    print(f"Seeding canonical network topology and monitoring baseline for {market_id}...")
+    is_mumbai = (market_id == "mumbai")
+
+    # Seed Phase 8 Default Metric Alert Thresholds
+    from app.models import DeviceMetricThreshold
+    from app.services.monitoring_provider import DEFAULT_THRESHOLDS
+    if db.query(DeviceMetricThreshold).count() == 0:
+        for th_def in DEFAULT_THRESHOLDS:
+            th = DeviceMetricThreshold(
+                market_id="all",
+                device_type=th_def["device_type"],
+                metric_type=th_def["metric_type"],
+                warning_threshold=th_def["warning"],
+                critical_threshold=th_def["critical"],
+                unit=th_def["unit"],
+                enabled=True
+            )
+            db.add(th)
+        db.commit()
+
+    if is_mumbai:
+        olts_data = [
+            ("OLT-BND-01", "Bandra Central Core OLT", "Bandra West", 19.0596, 72.8295, "HEALTHY", "Huawei SmartAX", "MA5800-X17", 16, 14),
+            ("OLT-AND-03", "Andheri MIDC Hub OLT", "Andheri East", 19.1136, 72.8697, "DEGRADED", "Nokia FX-8", "7360 ISAM", 16, 12),
+            ("OLT-BKC-01", "BKC Financial Core OLT", "BKC", 19.0657, 72.8687, "HEALTHY", "ZTE Titan", "C600", 16, 15),
+        ]
+        cabinets_data = [
+            ("CAB-MUM-101", "Cab-101 Bandra Hill Rd FDH", "Bandra West", 19.0550, 72.8330, "HEALTHY", 0),
+            ("CAB-MUM-104", "Cab-104 Bandra Linking Rd FDH", "Bandra West", 19.0640, 72.8350, "HEALTHY", 0),
+            ("CAB-MUM-108", "Cab-108 Andheri MIDC Central", "Andheri East", 19.1180, 72.8730, "DEGRADED", 1),
+            ("CAB-MUM-110", "Cab-110 Andheri Chakala FDH", "Andheri East", 19.1110, 72.8620, "HEALTHY", 1),
+            ("CAB-MUM-112", "Cab-112 BKC G-Block FDH", "BKC", 19.0680, 72.8710, "HEALTHY", 2),
+            ("CAB-MUM-115", "Cab-115 BKC Diamond Bourse", "BKC", 19.0630, 72.8650, "HEALTHY", 2),
+        ]
+    else:
+        olts_data = [
+            ("OLT-SL-01", "Salt Lake Sector V Central OLT", "Salt Lake Sector V", 22.5867, 88.4172, "HEALTHY", "Huawei SmartAX", "MA5800-X17", 16, 13),
+            ("OLT-NT-01", "New Town Action Area OLT", "New Town", 22.5898, 88.4744, "WARNING", "Nokia FX-8", "7360 ISAM", 16, 11),
+            ("OLT-PS-01", "Park Street Metro Core OLT", "Park Street", 22.5535, 88.3524, "HEALTHY", "ZTE Titan", "C600", 16, 14),
+        ]
+        cabinets_data = [
+            ("CAB-KOL-101", "Cab-101 Salt Lake Electronics Hub", "Salt Lake Sector V", 22.5830, 88.4220, "HEALTHY", 0),
+            ("CAB-KOL-103", "Cab-103 Salt Lake College More", "Salt Lake Sector V", 22.5780, 88.4310, "HEALTHY", 0),
+            ("CAB-KOL-106", "Cab-106 New Town Major Arterial", "New Town", 22.5930, 88.4680, "WARNING", 1),
+            ("CAB-KOL-108", "Cab-108 New Town Eco Park FDH", "New Town", 22.6010, 88.4720, "HEALTHY", 1),
+            ("CAB-KOL-112", "Cab-112 Park Street Camac Corner", "Park Street", 22.5510, 88.3560, "HEALTHY", 2),
+            ("CAB-KOL-115", "Cab-115 Park Street Metro Station", "Park Street", 22.5550, 88.3490, "HEALTHY", 2),
+        ]
+
+    created_olts = []
+    for code, name, area, lat, lng, st, vendor, model, total_p, active_p in olts_data:
+        cpu = 48.5 if st == "HEALTHY" else (78.0 if st == "WARNING" else 88.5)
+        mem = 58.0 if st == "HEALTHY" else (74.0 if st == "WARNING" else 89.0)
+        olt = NetworkDevice(
+            market_id=market_id,
+            device_type="OLT",
+            device_name=name,
+            device_code=code,
+            serial_number=f"SN-{code}-2026",
+            vendor=vendor,
+            model=model,
+            status=st,
+            latitude=lat,
+            longitude=lng,
+            area=area,
+            description=f"Primary Optical Line Terminal serving {area}",
+            total_ports=total_p,
+            active_ports=active_p,
+            optical_tx_dbm=3.8,
+            temperature_c=42.5 if st == "HEALTHY" else 58.0,
+            uptime_seconds=864000,
+            cpu_utilization_pct=cpu,
+            memory_utilization_pct=mem,
+            memory_total_gb=16.0,
+            memory_used_gb=round((mem / 100.0) * 16.0, 2),
+            memory_available_gb=round(16.0 - ((mem / 100.0) * 16.0), 2),
+            last_boot_at=datetime.utcnow() - timedelta(days=10),
+            last_seen_at=datetime.utcnow()
+        )
+        db.add(olt)
+        db.flush()
+        created_olts.append(olt)
+
+        # Create 4 PON ports
+        techs = ["GPON", "GPON", "XGS-PON", "GPON"]
+        for p_idx in range(1, 5):
+            port = OLTPort(
+                device_id=olt.id,
+                port_number=f"0/1/{p_idx}",
+                technology=techs[p_idx - 1],
+                status="HEALTHY" if st != "DEGRADED" or p_idx > 1 else "DEGRADED",
+                connected_clients=28 + (p_idx * 6),
+                capacity=64,
+                utilization_pct=round(45.0 + (p_idx * 8.5), 1),
+                tx_power_dbm=3.5,
+                rx_power_dbm=-20.5 + (p_idx * 0.3),
+                last_updated_at=datetime.utcnow()
+            )
+            db.add(port)
+
+    # Seed Fiber Cabinets
+    created_cabinets = []
+    for code, name, area, lat, lng, st, olt_idx in cabinets_data:
+        parent_olt = created_olts[olt_idx]
+        cab = NetworkDevice(
+            market_id=market_id,
+            device_type="FIBER_CABINET",
+            device_name=name,
+            device_code=code,
+            serial_number=f"SN-{code}-2026",
+            vendor="CommScope FDH",
+            model="FDH-3000",
+            status=st,
+            latitude=lat,
+            longitude=lng,
+            area=area,
+            parent_id=parent_olt.id,
+            description=f"Fiber Distribution Hub connecting {area} to {parent_olt.device_name}",
+            total_ports=72,
+            active_ports=48,
+            temperature_c=36.0,
+            uptime_seconds=600000,
+            last_seen_at=datetime.utcnow()
+        )
+        db.add(cab)
+        db.flush()
+        created_cabinets.append(cab)
+
+        # Link OLT -> Cabinet (Feeder)
+        link = NetworkLink(
+            market_id=market_id,
+            source_device_id=parent_olt.id,
+            target_device_id=cab.id,
+            link_type="FIBER_FEEDER",
+            status="HEALTHY" if st == "HEALTHY" else st,
+            distance_meters=round(random.uniform(1200, 2800), 1)
+        )
+        db.add(link)
+
+    # Seed Splitters (2 splitters per cabinet = 12 splitters)
+    created_splitters = []
+    for c_idx, cab in enumerate(created_cabinets):
+        for s_idx in range(1, 3):
+            s_code = f"SPL-{(market_id[:3]).upper()}-{c_idx+1:02d}-{s_idx}"
+            s_name = f"Splitter 1:8 - {cab.device_name} #{s_idx}"
+            st = cab.status if cab.status != "DEGRADED" else ("DEGRADED" if s_idx == 1 else "HEALTHY")
+            s_lat = cab.latitude + (s_idx * 0.0015)
+            s_lng = cab.longitude + (s_idx * 0.0015)
+            spl = NetworkDevice(
+                market_id=market_id,
+                device_type="SPLITTER",
+                device_name=s_name,
+                device_code=s_code,
+                serial_number=f"SN-{s_code}",
+                vendor="Corning Optical",
+                model="PLC-1x8",
+                status=st,
+                latitude=s_lat,
+                longitude=s_lng,
+                area=cab.area,
+                parent_id=cab.id,
+                description=f"1:8 optical splitter downstream from {cab.device_code}",
+                total_ports=8,
+                active_ports=6,
+                optical_rx_dbm=-20.5 if st == "HEALTHY" else -27.5,
+                optical_tx_dbm=2.8,
+                uptime_seconds=450000,
+                last_seen_at=datetime.utcnow()
+            )
+            db.add(spl)
+            db.flush()
+            created_splitters.append(spl)
+
+            # Link Cabinet -> Splitter (Distribution)
+            link = NetworkLink(
+                market_id=market_id,
+                source_device_id=cab.id,
+                target_device_id=spl.id,
+                link_type="FIBER_DISTRIBUTION",
+                status=st,
+                distance_meters=round(random.uniform(250, 600), 1)
+            )
+            db.add(link)
+
+    # Seed ONTs / ONUs mapped to actual customers
+    customer_sample = [c[0] if isinstance(c, tuple) else c for c in customers[:len(created_splitters) * 3]]
+    for idx, cust in enumerate(customer_sample):
+        parent_spl = created_splitters[idx % len(created_splitters)]
+        dev_type = "ONT" if (idx % 2 == 0) else "ONU"
+        c_code = f"{dev_type}-{(market_id[:3]).upper()}-{cust.id:04d}"
+        c_name = f"{dev_type} - {cust.name}"
+        st = "DEGRADED" if cust.status == "At-Risk" else ("DOWN" if cust.status == "Churned" else "HEALTHY")
+        rx_power = -21.2 if st == "HEALTHY" else (-27.8 if st == "DEGRADED" else -32.0)
+
+        c_lat = cust.service_latitude or (parent_spl.latitude + random.uniform(-0.002, 0.002))
+        c_lng = cust.service_longitude or (parent_spl.longitude + random.uniform(-0.002, 0.002))
+
+        ont = NetworkDevice(
+            market_id=market_id,
+            device_type=dev_type,
+            device_name=c_name,
+            device_code=c_code,
+            serial_number=f"HWTC{cust.customer_code.replace('-', '')[-8:]}",
+            vendor="Huawei EchoLife" if dev_type == "ONT" else "ZTE ZXHN",
+            model="HG8245H" if dev_type == "ONT" else "F670L",
+            status=st,
+            latitude=c_lat,
+            longitude=c_lng,
+            area=cust.locality,
+            parent_id=parent_spl.id,
+            customer_id=cust.id,
+            description=f"Subscriber terminal for {cust.name} ({cust.customer_code})",
+            total_ports=4,
+            active_ports=1,
+            optical_rx_dbm=rx_power,
+            optical_tx_dbm=2.4,
+            temperature_c=39.5,
+            uptime_seconds=random.randint(50000, 400000),
+            last_seen_at=datetime.utcnow()
+        )
+        db.add(ont)
+        db.flush()
+
+        # Link Splitter -> ONT/ONU (Drop Cable)
+        link = NetworkLink(
+            market_id=market_id,
+            source_device_id=parent_spl.id,
+            target_device_id=ont.id,
+            link_type="DROP_CABLE",
+            status=st,
+            distance_meters=round(random.uniform(45, 180), 1)
+        )
+        db.add(link)
+
+    # Seed Optical Alarms
+    if is_mumbai:
+        degraded_cab = next((c for c in created_cabinets if c.status == "DEGRADED"), created_cabinets[0])
+        alm1 = NetworkAlarm(
+            alarm_code="ALM-MUM-OPT-01",
+            market_id="mumbai",
+            device_id=degraded_cab.id,
+            severity="CRITICAL",
+            code="OPTICAL_ATTENUATION_EXCEEDED",
+            message=f"High attenuation (-27.8 dBm) detected on feeder line connecting {degraded_cab.device_name}",
+            status="ACTIVE",
+            first_seen_at=datetime.utcnow() - timedelta(minutes=75)
+        )
+        db.add(alm1)
+
+        bnd_olt = created_olts[0]
+        alm2 = NetworkAlarm(
+            alarm_code="ALM-MUM-UTIL-02",
+            market_id="mumbai",
+            device_id=bnd_olt.id,
+            severity="WARNING",
+            code="PON_CAPACITY_WARNING",
+            message="PON Port 0/1/3 subscriber capacity reaching 85% utilization threshold",
+            status="ACTIVE",
+            first_seen_at=datetime.utcnow() - timedelta(minutes=30)
+        )
+        db.add(alm2)
+    else:
+        warn_cab = next((c for c in created_cabinets if c.status == "WARNING"), created_cabinets[0])
+        alm1 = NetworkAlarm(
+            alarm_code="ALM-KOL-OPT-01",
+            market_id="kolkata",
+            device_id=warn_cab.id,
+            severity="WARNING",
+            code="OPTICAL_POWER_DRIFT",
+            message=f"Power drift detected at {warn_cab.device_name}. Optical Rx level is -25.8 dBm",
+            status="ACTIVE",
+            first_seen_at=datetime.utcnow() - timedelta(minutes=45)
+        )
+        db.add(alm1)
+
 
 if __name__ == "__main__":
     seed_database()

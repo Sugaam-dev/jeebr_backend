@@ -388,3 +388,168 @@ class RolePermission(Base):
     role = relationship('Role', back_populates='permissions')
     permission = relationship('Permission', back_populates='role_permissions')
 
+
+# ============================================================================
+# PHASE 7B: OLT / ONT / ONU Canonical Network Topology & Health Models
+# ============================================================================
+
+class NetworkDevice(Base):
+    """
+    Canonical normalized model for network devices across the fiber access network:
+    OLT, FIBER_CABINET, SPLITTER, ONT, ONU.
+    """
+    __tablename__ = 'network_devices'
+
+    id = Column(Integer, primary_key=True, index=True)
+    market_id = Column(String(50), default='mumbai', index=True, nullable=False)
+    device_type = Column(String(50), nullable=False, index=True)  # OLT, FIBER_CABINET, SPLITTER, ONT, ONU
+    device_name = Column(String(100), nullable=False, index=True)
+    device_code = Column(String(50), unique=True, index=True, nullable=False)  # e.g. OLT-01, CAB-101, SPLITTER-01, ONT-1001
+    serial_number = Column(String(100), nullable=True)
+    vendor = Column(String(100), default='Synthetic Vendor')
+    model = Column(String(100), default='Standard')
+    status = Column(String(50), default='HEALTHY', index=True)  # HEALTHY, WARNING, DEGRADED, DOWN, UNKNOWN
+    latitude = Column(Float, nullable=True)
+    longitude = Column(Float, nullable=True)
+    area = Column(String(100), nullable=True)
+    description = Column(Text, nullable=True)
+    parent_id = Column(Integer, ForeignKey('network_devices.id', ondelete='SET NULL'), nullable=True, index=True)
+    customer_id = Column(Integer, ForeignKey('customers.id', ondelete='SET NULL'), nullable=True, index=True)
+    node_id = Column(Integer, ForeignKey('nodes.id', ondelete='SET NULL'), nullable=True)
+
+    # Device capacity & optical telemetry
+    total_ports = Column(Integer, default=0)
+    active_ports = Column(Integer, default=0)
+    optical_rx_dbm = Column(Float, nullable=True)
+    optical_tx_dbm = Column(Float, nullable=True)
+    temperature_c = Column(Float, nullable=True)
+    uptime_seconds = Column(Integer, default=86400)
+    last_boot_at = Column(DateTime, nullable=True)
+    cpu_utilization_pct = Column(Float, nullable=True)
+    memory_utilization_pct = Column(Float, nullable=True)
+    memory_total_gb = Column(Float, default=16.0)
+    memory_used_gb = Column(Float, nullable=True)
+    memory_available_gb = Column(Float, nullable=True)
+    health_reasons = Column(Text, nullable=True)
+    last_seen_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    # Relationships
+    parent = relationship('NetworkDevice', remote_side=[id], backref='children')
+    customer = relationship('Customer')
+    node = relationship('Node')
+    ports = relationship('OLTPort', back_populates='device', cascade='all, delete-orphan')
+    alarms = relationship('NetworkAlarm', back_populates='device', cascade='all, delete-orphan')
+    metric_records = relationship('DeviceMetricRecord', back_populates='device', cascade='all, delete-orphan')
+
+
+class OLTPort(Base):
+    """
+    Physical/logical PON interface on an OLT chassis.
+    """
+    __tablename__ = 'olt_ports'
+
+    id = Column(Integer, primary_key=True, index=True)
+    device_id = Column(Integer, ForeignKey('network_devices.id', ondelete='CASCADE'), nullable=False, index=True)
+    port_number = Column(String(50), nullable=False)  # e.g., "0/1/1", "PON-01"
+    technology = Column(String(50), default='GPON')   # GPON, EPON, XG-PON, XGS-PON
+    status = Column(String(50), default='HEALTHY')    # HEALTHY, WARNING, DEGRADED, DOWN, UNKNOWN
+    connected_clients = Column(Integer, default=0)
+    capacity = Column(Integer, default=64)
+    utilization_pct = Column(Float, default=0.0)
+    tx_power_dbm = Column(Float, default=3.5)
+    rx_power_dbm = Column(Float, default=-20.0)
+    last_updated_at = Column(DateTime, default=datetime.utcnow)
+
+    # Relationships
+    device = relationship('NetworkDevice', back_populates='ports')
+
+
+class NetworkLink(Base):
+    """
+    Logical and fiber distribution links connecting topology nodes:
+    OLT -> Cabinet, Cabinet -> Splitter, Splitter -> ONT/ONU.
+    """
+    __tablename__ = 'network_links'
+
+    id = Column(Integer, primary_key=True, index=True)
+    market_id = Column(String(50), default='mumbai', index=True, nullable=False)
+    source_device_id = Column(Integer, ForeignKey('network_devices.id', ondelete='CASCADE'), nullable=False, index=True)
+    target_device_id = Column(Integer, ForeignKey('network_devices.id', ondelete='CASCADE'), nullable=False, index=True)
+    link_type = Column(String(50), default='LOGICAL')  # LOGICAL, FIBER_FEEDER, FIBER_DISTRIBUTION, DROP_CABLE
+    status = Column(String(50), default='HEALTHY')
+    distance_meters = Column(Float, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    # Relationships
+    source_device = relationship('NetworkDevice', foreign_keys=[source_device_id])
+    target_device = relationship('NetworkDevice', foreign_keys=[target_device_id])
+
+
+class NetworkAlarm(Base):
+    """
+    Optical alerts, LOS, high attenuation, and capacity saturation alarms.
+    """
+    __tablename__ = 'network_alarms'
+
+    id = Column(Integer, primary_key=True, index=True)
+    alarm_code = Column(String(100), unique=True, index=True, nullable=False)
+    market_id = Column(String(50), default='mumbai', index=True, nullable=False)
+    device_id = Column(Integer, ForeignKey('network_devices.id', ondelete='CASCADE'), nullable=False, index=True)
+    severity = Column(String(50), default='WARNING', index=True)  # INFO, WARNING, CRITICAL
+    code = Column(String(100), nullable=False)
+    message = Column(Text, nullable=False)
+    status = Column(String(50), default='ACTIVE')  # ACTIVE, CLEARED, ACKNOWLEDGED
+    first_seen_at = Column(DateTime, default=datetime.utcnow)
+    last_seen_at = Column(DateTime, default=datetime.utcnow)
+    cleared_at = Column(DateTime, nullable=True)
+
+    # Relationships
+    device = relationship('NetworkDevice', back_populates='alarms')
+
+
+# ============================================================================
+# PHASE 8: Device Metric Thresholds & Historical Telemetry Records
+# ============================================================================
+
+class DeviceMetricThreshold(Base):
+    """
+    Phase 8: Configurable monitoring alert thresholds per device type and metric.
+    """
+    __tablename__ = 'device_metric_thresholds'
+
+    id = Column(Integer, primary_key=True, index=True)
+    market_id = Column(String(50), default='all', index=True, nullable=False)
+    device_type = Column(String(50), nullable=False, index=True)  # OLT, ONT, ONU, FIBER_CABINET, ALL
+    metric_type = Column(String(50), nullable=False, index=True)  # CPU_UTILIZATION, MEMORY_UTILIZATION, TEMPERATURE, PON_UTILIZATION
+    warning_threshold = Column(Float, nullable=False)
+    critical_threshold = Column(Float, nullable=False)
+    unit = Column(String(20), default='%')
+    enabled = Column(Boolean, default=True)
+    updated_by_id = Column(Integer, ForeignKey('users.id', ondelete='SET NULL'), nullable=True)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    # Relationships
+    updated_by = relationship('User')
+
+
+class DeviceMetricRecord(Base):
+    """
+    Phase 8: Normalized historical telemetry time-series record.
+    """
+    __tablename__ = 'device_metric_records'
+
+    id = Column(Integer, primary_key=True, index=True)
+    device_id = Column(Integer, ForeignKey('network_devices.id', ondelete='CASCADE'), nullable=False, index=True)
+    market_id = Column(String(50), default='mumbai', index=True, nullable=False)
+    metric_type = Column(String(50), nullable=False, index=True)
+    value = Column(Float, nullable=False)
+    unit = Column(String(20), nullable=False)
+    status = Column(String(20), default='NORMAL')  # NORMAL, WARNING, CRITICAL
+    timestamp = Column(DateTime, default=datetime.utcnow, index=True)
+
+    # Relationships
+    device = relationship('NetworkDevice', back_populates='metric_records')
+
+
