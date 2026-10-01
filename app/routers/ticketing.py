@@ -73,11 +73,13 @@ def get_tickets(
             return []
     elif current_user.role == "Field Engineer":
         # Strict field engineer isolation: engineer only sees jobs assigned to them
-        eng = db.query(Resource).filter(
-            func.lower(Resource.email) == current_user.email.lower().strip()
-        ).first()
-        if eng:
-            query = query.filter(Ticket.assigned_resource_id == eng.id)
+        eng_resources = db.query(Resource).filter(
+            (Resource.user_id == current_user.id) |
+            (func.lower(Resource.email) == current_user.email.lower().strip())
+        ).all()
+        eng_ids = [r.id for r in eng_resources]
+        if eng_ids:
+            query = query.filter(Ticket.assigned_resource_id.in_(eng_ids))
         else:
             return []
 
@@ -472,10 +474,12 @@ def get_ticket(
                 detail="Forbidden: You can only view your own tickets."
             )
     elif current_user.role == "Field Engineer":
-        eng = db.query(Resource).filter(
-            func.lower(Resource.email) == current_user.email.lower().strip()
-        ).first()
-        if not eng or ticket.assigned_resource_id != eng.id:
+        eng_resources = db.query(Resource).filter(
+            (Resource.user_id == current_user.id) |
+            (func.lower(Resource.email) == current_user.email.lower().strip())
+        ).all()
+        eng_ids = [r.id for r in eng_resources]
+        if ticket.assigned_resource_id not in eng_ids:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="Forbidden: You can only view your own assigned jobs."

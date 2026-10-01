@@ -300,3 +300,83 @@ def test_route_calculation_and_caching():
     assert "provider" in route
     assert "fallback" in route["provider"] or "google" in route["provider"]
     assert len(route["waypoints"]) >= 2
+
+
+def test_multi_resource_engineer_jobs_resolution():
+    """
+    ENGINEER WORKBENCH: Tests that an engineer mapped to multiple resources
+    (e.g. Mumbai and Kolkata) sees their assigned work orders in /my-jobs
+    and can transition/access them regardless of resource ID ordering.
+    """
+    db = SessionLocal()
+    try:
+        # Find or create a test field engineer user
+        eng_user = db.query(User).filter(User.email == "multi_tech@pmrg.in").first()
+        if not eng_user:
+            from app.auth import hash_password
+            eng_user = User(
+                email="multi_tech@pmrg.in",
+                hashed_password=hash_password("tech123"),
+                full_name="Multi Tech",
+                role="Field Engineer",
+                is_active=True
+            )
+            db.add(eng_user)
+            db.commit()
+            db.refresh(eng_user)
+
+        # Create two resources for this engineer: Res 1 (Kolkata) and Res 2 (Mumbai)
+        r_kol = db.query(Resource).filter(Resource.email == "multi_tech@pmrg.in", Resource.market_id == "kolkata").first()
+        if not r_kol:
+            r_kol = Resource(
+                name="Multi Tech Kol",
+                email="multi_tech@pmrg.in",
+                market_id="kolkata",
+                region="Salt Lake",
+                resource_type="FIELD",
+                status="Available",
+                user_id=eng_user.id
+            )
+            db.add(r_kol)
+
+        r_mum = db.query(Resource).filter(Resource.email == "multi_tech@pmrg.in", Resource.market_id == "mumbai").first()
+        if not r_mum:
+            r_mum = Resource(
+                name="Multi Tech Mum",
+                email="multi_tech@pmrg.in",
+                market_id="mumbai",
+                region="Bandra West",
+                resource_type="FIELD",
+                status="Available",
+                user_id=eng_user.id
+            )
+            db.add(r_mum)
+        db.commit()
+        db.refresh(r_mum)
+
+        # Assign a ticket to Mumbai resource (which is not the first resource)
+        ticket = db.query(Ticket).filter(Ticket.market_id == "mumbai").first()
+        assert ticket is not None
+        ticket.assigned_resource_id = r_mum.id
+        db.commit()
+        ticket_id = ticket.id
+    finally:
+        db.close()
+
+    tech_token = _get_token("multi_tech@pmrg.in", "tech123")
+    headers = {"Authorization": f"Bearer {tech_token}", "X-Market-Id": "mumbai"}
+
+    # Call /my-jobs
+    res = client.get("/api/field-operations/my-jobs", headers=headers)
+    assert res.status_code == 200
+    my_jobs = res.json()
+    assert len(my_jobs) > 0
+    assigned_ticket_ids = [j["ticket_id"] for j in my_jobs]
+    assert ticket_id in assigned_ticket_ids
+
+    # Engineer can view single job detail
+    job_id = next(j["id"] for j in my_jobs if j["ticket_id"] == ticket_id)
+    detail_res = client.get(f"/api/field-operations/jobs/{job_id}", headers=headers)
+    assert detail_res.status_code == 200
+    assert detail_res.json()["id"] == job_id
+

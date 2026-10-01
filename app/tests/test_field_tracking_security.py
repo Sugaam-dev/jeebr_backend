@@ -339,6 +339,6 @@ def test_market_isolation_field_operations():
     assert all(e["market_id"] == "kolkata" for e in kol_engineers)
 
     # Verify no overlap
-    mum_names = {e["name"] for e in mum_engineers}
-    kol_names = {e["name"] for e in kol_engineers}
-    assert mum_names.isdisjoint(kol_names)
+    mum_ids = {e["id"] for e in mum_engineers}
+    kol_ids = {e["id"] for e in kol_engineers}
+    assert mum_ids.isdisjoint(kol_ids)

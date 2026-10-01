@@ -41,26 +41,33 @@ from app.services.workload_service import calculate_engineer_workload, emit_work
 router = APIRouter(tags=["Field Operations & Live Tracking"])
 
 
-def _resolve_engineer_resource(db: Session, user: User) -> Optional[Resource]:
+def _resolve_engineer_resources(db: Session, user: User) -> List[Resource]:
     """
-    Finds the Resource entity mapped to a field engineer User using authoritative relational identity (User.id -> Resource.user_id).
+    Finds all Resource entities mapped to a field engineer User using authoritative relational identity
+    (User.id -> Resource.user_id) or case-insensitive email matching.
+    Auto-binds user_id to any unbound resources matching this user's email.
     """
-    by_user = db.query(Resource).filter(Resource.user_id == user.id).first()
-    if by_user:
-        return by_user
-    # Fallback to case-insensitive email matching and bind user_id permanently if unbound
-    by_email = db.query(Resource).filter(func.lower(Resource.email) == user.email.lower().strip()).first()
-    if by_email:
-        if by_email.user_id is None:
-            by_email.user_id = user.id
-            db.commit()
-        return by_email
+    resources = db.query(Resource).filter(
+        (Resource.user_id == user.id) | (func.lower(Resource.email) == user.email.lower().strip())
+    ).all()
+
+    # Bind user_id to any unbound resources matching this user's email
+    updated = False
+    for r in resources:
+        if r.user_id is None:
+            r.user_id = user.id
+            updated = True
+    if updated:
+        db.commit()
+
+    if resources:
+        return resources
 
     # Self-healing: If user is an active Field Engineer, auto-provision and link a Resource record
     if user.role == "Field Engineer":
         new_res = Resource(
             market_id="mumbai",
-            name=user.full_name,
+            name=user.full_name or user.email.split("@")[0],
             email=user.email.lower().strip(),
             phone=getattr(user, "phone", None) or "+91 98200 12345",
             resource_type="FIELD",
@@ -77,9 +84,52 @@ def _resolve_engineer_resource(db: Session, user: User) -> Optional[Resource]:
         db.add(new_res)
         db.commit()
         db.refresh(new_res)
-        return new_res
+        return [new_res]
 
-    return None
+    return []
+
+
+def _resolve_engineer_resource_ids(db: Session, user: User) -> List[int]:
+    """Returns all Resource IDs associated with the user."""
+    return [r.id for r in _resolve_engineer_resources(db, user)]
+
+
+def _resolve_engineer_resource(db: Session, user: User, market: Optional[str] = None) -> Optional[Resource]:
+    """
+    Finds the primary Resource entity mapped to a field engineer User.
+    If market is specified, matches the resource for that market.
+    Otherwise prioritizes resources that have active tickets or assignments, then first available.
+    """
+    resources = _resolve_engineer_resources(db, user)
+    if not resources:
+        return None
+
+    if market:
+        for r in resources:
+            if r.market_id and r.market_id.lower() == market.lower():
+                return r
+
+    # Check if any resource has active assignments or tickets
+    res_ids = [r.id for r in resources]
+    active_fa = db.query(FieldAssignment).filter(
+        FieldAssignment.engineer_id.in_(res_ids),
+        FieldAssignment.status.notin_(["COMPLETED", "CANCELLED", "REJECTED"])
+    ).first()
+    if active_fa:
+        for r in resources:
+            if r.id == active_fa.engineer_id:
+                return r
+
+    active_t = db.query(Ticket).filter(
+        Ticket.assigned_resource_id.in_(res_ids),
+        Ticket.status.notin_(["Resolved", "Closed"])
+    ).first()
+    if active_t:
+        for r in resources:
+            if r.id == active_t.assigned_resource_id:
+                return r
+
+    return resources[0]
 
 
 def _build_field_assignment_response(assignment: FieldAssignment) -> FieldAssignmentResponse:
@@ -233,7 +283,8 @@ def get_engineer_workload_endpoint(
     from app.services.rbac_service import is_admin_or_super
     if not is_admin_or_super(current_user.role) and current_user.role != "NOC":
         if current_user.role == "Field Engineer":
-            if not r.email or r.email.lower().strip() != current_user.email.lower().strip():
+            engineer_ids = _resolve_engineer_resource_ids(db, current_user)
+            if engineer_id not in engineer_ids and (not r.email or r.email.lower().strip() != current_user.email.lower().strip()):
                 raise HTTPException(status_code=403, detail="Forbidden: You can only view your own workload.")
         else:
             raise HTTPException(status_code=403, detail="Forbidden: Insufficient privileges to view engineer workload.")
@@ -335,6 +386,11 @@ def get_field_jobs(
                 notes=f"Auto-synchronized field dispatch for ticket {t.ticket_code}"
             )
             db.add(new_fa)
+        else:
+            if existing_fa.engineer_id != t.assigned_resource_id:
+                existing_fa.engineer_id = t.assigned_resource_id
+            if existing_fa.status in ("CANCELLED", "REJECTED"):
+                existing_fa.status = "ASSIGNED"
     db.commit()
 
     query = db.query(FieldAssignment).options(
@@ -369,8 +425,8 @@ def get_single_field_job(
 
     # Resource Scope Enforcement
     if current_user.role == "Field Engineer":
-        eng = _resolve_engineer_resource(db, current_user)
-        if not eng or assignment.engineer_id != eng.id:
+        engineer_ids = _resolve_engineer_resource_ids(db, current_user)
+        if assignment.engineer_id not in engineer_ids:
             raise HTTPException(status_code=403, detail="Forbidden: You can only view your own assigned jobs.")
     elif current_user.role == "Customer":
         if not assignment.ticket or not assignment.ticket.customer or assignment.ticket.customer.email.lower().strip() != current_user.email.lower().strip():
@@ -388,8 +444,10 @@ def get_my_assigned_jobs(
     market: str = Depends(get_current_market)
 ):
     """List jobs assigned strictly to the authenticated field engineer."""
-    engineer = _resolve_engineer_resource(db, current_user)
-    if not engineer:
+    engineer_resources = _resolve_engineer_resources(db, current_user)
+    engineer_ids = [r.id for r in engineer_resources]
+
+    if not engineer_ids:
         # If Admin or NOC without mapped Resource, return all active market jobs
         if current_user.role in ("Admin", "NOC"):
             jobs = db.query(FieldAssignment).options(
@@ -402,9 +460,9 @@ def get_my_assigned_jobs(
             return [_build_field_assignment_response(j) for j in jobs]
         return []
 
-    # Auto-synchronize: ensure all tickets assigned to this engineer have active FieldAssignments
+    # Auto-synchronize: ensure all tickets assigned to any of this engineer's resources have active FieldAssignments
     active_assigned_tickets = db.query(Ticket).filter(
-        Ticket.assigned_resource_id == engineer.id,
+        Ticket.assigned_resource_id.in_(engineer_ids),
         Ticket.status.notin_(["Resolved", "Closed"])
     ).all()
 
@@ -413,24 +471,34 @@ def get_my_assigned_jobs(
         if not existing_fa:
             new_fa = FieldAssignment(
                 ticket_id=t.id,
-                engineer_id=engineer.id,
+                engineer_id=t.assigned_resource_id,
                 market_id=t.market_id or market,
                 status="ASSIGNED",
                 created_at=t.created_at or datetime.utcnow(),
                 notes=f"Auto-synchronized field dispatch for ticket {t.ticket_code}"
             )
             db.add(new_fa)
+        else:
+            if existing_fa.engineer_id != t.assigned_resource_id:
+                existing_fa.engineer_id = t.assigned_resource_id
+            if existing_fa.status in ("CANCELLED", "REJECTED"):
+                existing_fa.status = "ASSIGNED"
     db.commit()
 
-    jobs = db.query(FieldAssignment).options(
+    all_jobs = db.query(FieldAssignment).options(
         joinedload(FieldAssignment.ticket).joinedload(Ticket.customer),
         joinedload(FieldAssignment.engineer)
     ).filter(
-        FieldAssignment.engineer_id == engineer.id,
+        FieldAssignment.engineer_id.in_(engineer_ids),
         FieldAssignment.status.notin_(["COMPLETED", "CANCELLED", "REJECTED"])
     ).order_by(FieldAssignment.created_at.desc()).all()
 
-    return [_build_field_assignment_response(j) for j in jobs]
+    # If engineer has active jobs in the currently selected market, filter to it;
+    # otherwise return all active assigned jobs so the engineer never encounters an empty portal.
+    market_jobs = [j for j in all_jobs if j.market_id and j.market_id.lower() == market.lower()]
+    jobs_to_return = market_jobs if market_jobs else all_jobs
+
+    return [_build_field_assignment_response(j) for j in jobs_to_return]
 
 
 @router.post("/jobs/{assignment_id}/transition", response_model=FieldAssignmentResponse)
@@ -454,8 +522,8 @@ async def update_job_status(
 
     # Engineer authorization check
     if current_user.role == "Field Engineer":
-        engineer = _resolve_engineer_resource(db, current_user)
-        if not engineer or assignment.engineer_id != engineer.id:
+        engineer_ids = _resolve_engineer_resource_ids(db, current_user)
+        if assignment.engineer_id not in engineer_ids:
             raise HTTPException(status_code=403, detail="Forbidden: You can only update your own assigned jobs.")
 
     updated = transition_assignment_state(
@@ -506,8 +574,8 @@ async def submit_location_ping(
         raise HTTPException(status_code=404, detail="Assigned engineer resource not found")
 
     if current_user.role == "Field Engineer":
-        user_engineer = _resolve_engineer_resource(db, current_user)
-        if not user_engineer or assignment.engineer_id != user_engineer.id:
+        engineer_ids = _resolve_engineer_resource_ids(db, current_user)
+        if assignment.engineer_id not in engineer_ids:
             raise HTTPException(status_code=403, detail="Forbidden: Cannot send location for another engineer's job.")
 
     # Security & Integrity: Block simulated/mock pings in production
@@ -557,8 +625,8 @@ async def request_customer_otp(
         raise HTTPException(status_code=404, detail="Field assignment not found")
 
     if current_user.role == "Field Engineer":
-        eng = _resolve_engineer_resource(db, current_user)
-        if not eng or assignment.engineer_id != eng.id:
+        engineer_ids = _resolve_engineer_resource_ids(db, current_user)
+        if assignment.engineer_id not in engineer_ids:
             raise HTTPException(status_code=403, detail="Forbidden: Cannot request OTP for another engineer's job.")
 
     ticket = assignment.ticket
@@ -626,8 +694,8 @@ async def verify_customer_otp(
         raise HTTPException(status_code=404, detail="Field assignment not found")
 
     if current_user.role == "Field Engineer":
-        eng = _resolve_engineer_resource(db, current_user)
-        if not eng or assignment.engineer_id != eng.id:
+        engineer_ids = _resolve_engineer_resource_ids(db, current_user)
+        if assignment.engineer_id not in engineer_ids:
             raise HTTPException(status_code=403, detail="Forbidden: Cannot verify OTP for another engineer's job.")
 
     if assignment.status not in ("OTP_REQUESTED", "WORKING"):
@@ -691,8 +759,8 @@ async def complete_job_and_close_ticket(
         raise HTTPException(status_code=404, detail="Field assignment not found")
 
     if current_user.role == "Field Engineer":
-        eng = _resolve_engineer_resource(db, current_user)
-        if not eng or assignment.engineer_id != eng.id:
+        engineer_ids = _resolve_engineer_resource_ids(db, current_user)
+        if assignment.engineer_id not in engineer_ids:
             raise HTTPException(status_code=403, detail="Forbidden: Cannot complete another engineer's job.")
 
     closure_notes = (req.resolution_notes or req.notes) if req else None
@@ -749,8 +817,8 @@ def get_customer_ticket_tracking(
                 detail="Access forbidden: You can only view tracking for your own registered tickets."
             )
     elif current_user.role == "Field Engineer":
-        eng = _resolve_engineer_resource(db, current_user)
-        if not eng or ticket.assigned_resource_id != eng.id:
+        engineer_ids = _resolve_engineer_resource_ids(db, current_user)
+        if ticket.assigned_resource_id not in engineer_ids:
             raise HTTPException(status_code=403, detail="Forbidden: You can only track your own assigned jobs.")
     elif current_user.role == "Viewer":
         # Viewer gets generalized tracking info without raw coordinates
@@ -883,8 +951,8 @@ async def stream_session_tracking(
                 detail="Forbidden: You cannot subscribe to another customer's tracking session."
             )
     elif current_user.role == "Field Engineer":
-        user_eng = _resolve_engineer_resource(db, current_user)
-        if not user_eng or session.engineer_id != user_eng.id:
+        engineer_ids = _resolve_engineer_resource_ids(db, current_user)
+        if session.engineer_id not in engineer_ids:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="Forbidden: You cannot subscribe to another engineer's tracking session."
@@ -944,8 +1012,8 @@ async def stream_ticket_tracking(
                 detail="Forbidden: You cannot subscribe to another customer's ticket stream."
             )
     elif current_user.role == "Field Engineer":
-        user_eng = _resolve_engineer_resource(db, current_user)
-        if not user_eng or ticket.assigned_resource_id != user_eng.id:
+        engineer_ids = _resolve_engineer_resource_ids(db, current_user)
+        if ticket.assigned_resource_id not in engineer_ids:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="Forbidden: You cannot subscribe to another engineer's ticket stream."
@@ -1017,8 +1085,8 @@ def get_job_route(
         if not customer or customer.email.lower().strip() != current_user.email.lower().strip():
             raise HTTPException(status_code=403, detail="Forbidden: You can only view route for your own ticket.")
     elif current_user.role == "Field Engineer":
-        eng = _resolve_engineer_resource(db, current_user)
-        if not eng or assignment.engineer_id != eng.id:
+        engineer_ids = _resolve_engineer_resource_ids(db, current_user)
+        if assignment.engineer_id not in engineer_ids:
             raise HTTPException(status_code=403, detail="Forbidden: You can only view route for your own assigned job.")
     elif current_user.role == "Viewer":
         raise HTTPException(status_code=403, detail="Forbidden: Viewer cannot access detailed route coordinates.")
@@ -1066,8 +1134,8 @@ def get_job_tracking_history(
         raise HTTPException(status_code=404, detail="Field assignment not found")
 
     if current_user.role == "Field Engineer":
-        eng = _resolve_engineer_resource(db, current_user)
-        if not eng or assignment.engineer_id != eng.id:
+        engineer_ids = _resolve_engineer_resource_ids(db, current_user)
+        if assignment.engineer_id not in engineer_ids:
             raise HTTPException(status_code=403, detail="Forbidden: You can only view history for your own jobs.")
 
     pings = db.query(LocationPing).join(
