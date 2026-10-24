@@ -16,10 +16,18 @@ def seed_database():
     from sqlalchemy import text
     try:
         with engine.connect() as conn:
-            conn.execute(text("TRUNCATE TABLE network_alarms, network_links, olt_ports, network_devices, field_otps, location_pings, tracking_sessions, field_assignments, audit_logs, recommendations, invoices, tickets, usage_records, customers, resources, nodes, users CASCADE;"))
-            conn.commit()
+            if engine.dialect.name == "sqlite":
+                for tbl in reversed(Base.metadata.sorted_tables):
+                    try:
+                        conn.execute(text(f"DELETE FROM {tbl.name};"))
+                    except Exception:
+                        pass
+                conn.commit()
+            else:
+                conn.execute(text("TRUNCATE TABLE network_alarms, network_links, olt_ports, network_devices, field_otps, location_pings, tracking_sessions, field_assignments, audit_logs, recommendations, invoices, tickets, usage_records, customers, resources, nodes, users CASCADE;"))
+                conn.commit()
     except Exception as e:
-        print(f"Note on truncate: {e}")
+        print(f"Note on truncate/cleanup: {e}")
 
     db = SessionLocal()
     try:

@@ -176,6 +176,10 @@ def get_active_otp_for_customer(db: Session, ticket_id: int, customer_id: Option
     }
 
 
+import threading
+
+_otp_verification_lock = threading.Lock()
+
 def verify_customer_submitted_otp(
     db: Session,
     assignment: FieldAssignment,
@@ -185,49 +189,50 @@ def verify_customer_submitted_otp(
     Verifies a customer-provided OTP against the stored PBKDF2 hash.
     Returns: (is_valid, message, attempts_remaining)
     """
-    now = datetime.utcnow()
-    # Concurrency safe: lock OTP record to prevent race conditions during concurrent verification
-    otp_record = db.query(FieldOtp).filter(
-        FieldOtp.field_assignment_id == assignment.id,
-        FieldOtp.is_used == False
-    ).order_by(FieldOtp.created_at.desc()).with_for_update().first()
+    with _otp_verification_lock:
+        now = datetime.utcnow()
+        # Concurrency safe: lock OTP record to prevent race conditions during concurrent verification
+        otp_record = db.query(FieldOtp).filter(
+            FieldOtp.field_assignment_id == assignment.id,
+            FieldOtp.is_used == False
+        ).order_by(FieldOtp.created_at.desc()).populate_existing().with_for_update().first()
 
-    if not otp_record:
-        return False, "No active OTP found. Please request a new verification code.", 0
+        if not otp_record:
+            return False, "No active OTP found. Please request a new verification code.", 0
 
-    if otp_record.is_locked:
-        return False, "Verification locked due to maximum failed attempts. Please request a new code.", 0
+        if otp_record.is_locked:
+            return False, "Verification locked due to maximum failed attempts. Please request a new code.", 0
 
-    if otp_record.expires_at < now:
-        return False, "Verification code has expired. Please request a new OTP.", 0
+        if otp_record.expires_at < now:
+            return False, "Verification code has expired. Please request a new OTP.", 0
 
-    max_attempts = settings.FIELD_OTP_MAX_ATTEMPTS
-    otp_record.attempts += 1
+        max_attempts = settings.FIELD_OTP_MAX_ATTEMPTS
+        otp_record.attempts += 1
 
-    # Verify PBKDF2 hash
-    candidate_hash = hash_otp(submitted_otp.strip(), otp_record.salt)
-    is_match = secrets.compare_digest(candidate_hash, otp_record.otp_hash)
+        # Verify PBKDF2 hash
+        candidate_hash = hash_otp(submitted_otp.strip(), otp_record.salt)
+        is_match = secrets.compare_digest(candidate_hash, otp_record.otp_hash)
 
-    if not is_match:
-        attempts_left = max(0, max_attempts - otp_record.attempts)
-        if attempts_left == 0:
-            otp_record.is_locked = True
-            assignment.status = "ON_HOLD"
-            assignment.notes = (assignment.notes or "") + f" [OTP verification locked on {now.strftime('%Y-%m-%d %H:%M')}]"
-            db.commit()
-            return False, "Too many failed attempts. Verification locked. Job moved to ON_HOLD.", 0
-        else:
-            db.commit()
-            return False, f"Invalid OTP code. {attempts_left} attempt(s) remaining.", attempts_left
+        if not is_match:
+            attempts_left = max(0, max_attempts - otp_record.attempts)
+            if attempts_left == 0:
+                otp_record.is_locked = True
+                assignment.status = "ON_HOLD"
+                assignment.notes = (assignment.notes or "") + f" [OTP verification locked on {now.strftime('%Y-%m-%d %H:%M')}]"
+                db.commit()
+                return False, "Too many failed attempts. Verification locked. Job moved to ON_HOLD.", 0
+            else:
+                db.commit()
+                return False, f"Invalid OTP code. {attempts_left} attempt(s) remaining.", attempts_left
 
-    # Successful match
-    otp_record.is_used = True
-    otp_record.verified_at = now
-    assignment.status = "OTP_VERIFIED"
-    assignment.otp_verified_at = now
-    db.commit()
+        # Successful match
+        otp_record.is_used = True
+        otp_record.verified_at = now
+        assignment.status = "OTP_VERIFIED"
+        assignment.otp_verified_at = now
+        db.commit()
 
-    # Clear mock dispatch store for security
-    _MOCK_CUSTOMER_DISPATCH_STORE.pop(assignment.ticket_id, None)
+        # Clear mock dispatch store for security
+        _MOCK_CUSTOMER_DISPATCH_STORE.pop(assignment.ticket_id, None)
 
-    return True, "Customer OTP verified successfully. Job ready for completion.", max_attempts - otp_record.attempts
+        return True, "Customer OTP verified successfully. Job ready for completion.", max_attempts - otp_record.attempts

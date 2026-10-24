@@ -14,3 +14,4 @@ pytest>=8.0.0
 sse-starlette>=1.6.1
 redis>=5.0.0
 passlib[bcrypt]>=1.7.4
+python-multipart>=0.0.9

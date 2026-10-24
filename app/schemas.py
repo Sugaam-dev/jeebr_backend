@@ -274,6 +274,278 @@ class Customer360Response(BaseModel):
     active_recommendations: List[Dict[str, Any]] = []
 
 
+# ============================================================================
+# CRM Foundation & Completion Schemas (Phase 1 Stage 2 / CRM Completion Sprint)
+# ============================================================================
+
+class CRMContactBase(BaseModel):
+    first_name: str = Field(..., min_length=1, max_length=128)
+    last_name: Optional[str] = Field(None, max_length=128)
+    email: Optional[EmailStr] = None
+    phone: Optional[str] = Field(None, max_length=32)
+    role: str = Field("PRIMARY", max_length=64)  # PRIMARY, BILLING, TECHNICAL, EMERGENCY
+    is_primary: bool = False
+
+class CRMContactCreate(CRMContactBase):
+    pass
+
+class CRMContactUpdate(BaseModel):
+    first_name: Optional[str] = Field(None, min_length=1, max_length=128)
+    last_name: Optional[str] = Field(None, max_length=128)
+    email: Optional[EmailStr] = None
+    phone: Optional[str] = Field(None, max_length=32)
+    role: Optional[str] = None
+    is_primary: Optional[bool] = None
+    is_archived: Optional[bool] = None
+
+class CRMContactResponse(BaseModel):
+    id: str
+    crm_customer_id: str
+    first_name: str
+    last_name: Optional[str] = None
+    email: Optional[str] = None
+    phone: Optional[str] = None
+    role: str
+    is_primary: bool
+    is_verified: bool
+    is_archived: bool
+    created_at: datetime
+    updated_at: Optional[datetime] = None
+
+    class Config:
+        from_attributes = True
+
+class CRMAddressBase(BaseModel):
+    address_type: str = Field("INSTALLATION", max_length=32)  # INSTALLATION, BILLING, REGISTERED
+    address_line1: str = Field(..., min_length=3, max_length=255)
+    address_line2: Optional[str] = Field(None, max_length=255)
+    city: str = Field(..., min_length=2, max_length=100)
+    state: str = Field(..., min_length=2, max_length=100)
+    postal_code: str = Field(..., min_length=3, max_length=20)
+    latitude: Optional[float] = None
+    longitude: Optional[float] = None
+    serviceability_status: Optional[str] = "PENDING_SURVEY"
+
+class CRMAddressCreate(CRMAddressBase):
+    pass
+
+class CRMAddressUpdate(BaseModel):
+    address_type: Optional[str] = None
+    address_line1: Optional[str] = None
+    address_line2: Optional[str] = None
+    city: Optional[str] = None
+    state: Optional[str] = None
+    postal_code: Optional[str] = None
+    latitude: Optional[float] = None
+    longitude: Optional[float] = None
+    serviceability_status: Optional[str] = None
+    is_archived: Optional[bool] = None
+
+class CRMAddressResponse(BaseModel):
+    id: str
+    crm_customer_id: str
+    address_type: str
+    address_line1: str
+    address_line2: Optional[str] = None
+    city: str
+    state: str
+    postal_code: str
+    latitude: Optional[float] = None
+    longitude: Optional[float] = None
+    serviceability_status: str
+    candidate_node_id: Optional[int] = None
+    distance_to_node_meters: Optional[float] = None
+    survey_ticket_code: Optional[str] = None
+    survey_ticket_status: Optional[str] = None
+    is_archived: bool
+    created_at: datetime
+    updated_at: Optional[datetime] = None
+
+    class Config:
+        from_attributes = True
+
+class CRMDocumentResponse(BaseModel):
+    id: str
+    crm_customer_id: str
+    document_type: str
+    document_identifier: Optional[str] = None
+    file_name: str
+    file_size_bytes: int
+    mime_type: str
+    upload_status: str
+    verification_status: str
+    verified_by_id: Optional[int] = None
+    verified_at: Optional[datetime] = None
+    rejection_reason: Optional[str] = None
+    is_archived: bool
+    created_at: datetime
+    updated_at: Optional[datetime] = None
+    download_url: Optional[str] = None
+
+    class Config:
+        from_attributes = True
+
+class CRMDocumentVerifyRequest(BaseModel):
+    verification_status: str = Field(..., pattern="^(VERIFIED|REJECTED)$")
+    rejection_reason: Optional[str] = None
+
+class CRMSurveyCompleteRequest(BaseModel):
+    latitude: float = Field(..., ge=-90.0, le=90.0)
+    longitude: float = Field(..., ge=-180.0, le=180.0)
+    serviceability_status: Optional[str] = "SERVICEABLE"
+    candidate_node_id: Optional[int] = None
+    distance_to_node_meters: Optional[float] = None
+    ticket_id: Optional[int] = None
+    notes: Optional[str] = None
+
+class CRMActivityResponse(BaseModel):
+    id: str
+    crm_customer_id: str
+    activity_type: str
+    summary: str
+    details: Optional[str] = None
+    performed_by_id: Optional[int] = None
+    created_at: datetime
+
+    class Config:
+        from_attributes = True
+
+class CRMCustomerCreate(BaseModel):
+    customer_number: Optional[str] = Field(None, max_length=32)
+    legal_name: str = Field(..., min_length=2, max_length=255)
+    trade_name: Optional[str] = Field(None, max_length=255)
+    account_type: str = Field("RESIDENTIAL", max_length=32)  # RESIDENTIAL, ENTERPRISE, SME
+    status: str = Field("ACTIVE", max_length=32)  # PROSPECT, PENDING_VERIFICATION, ACTIVE, etc.
+    market_id: Optional[str] = Field(None, max_length=32)
+    email: EmailStr
+    phone: str = Field(..., min_length=6, max_length=32)
+    locality: Optional[str] = "Colaba"
+    segment: Optional[str] = "Prepaid - Daily Unlimited"
+    customer_type: Optional[str] = "Prepaid"
+    plan_name: Optional[str] = "Unlimited 30D"
+    plan_price: Optional[float] = 299.0
+    tax_id: Optional[str] = Field(None, max_length=64)
+    billing_currency: Optional[str] = "INR"
+    primary_contact: Optional[CRMContactCreate] = None
+    installation_address: Optional[CRMAddressCreate] = None
+
+class CRMCustomerUpdate(BaseModel):
+    legal_name: Optional[str] = Field(None, min_length=2, max_length=255)
+    trade_name: Optional[str] = Field(None, max_length=255)
+    account_type: Optional[str] = None
+    status: Optional[str] = None
+    email: Optional[EmailStr] = None
+    phone: Optional[str] = None
+    locality: Optional[str] = None
+    segment: Optional[str] = None
+    customer_type: Optional[str] = None
+    plan_name: Optional[str] = None
+    plan_price: Optional[float] = None
+    tax_id: Optional[str] = None
+    expected_version: Optional[str] = None
+
+class CRMCustomerDetailResponse(CustomerListResponse):
+    crm_id: Optional[str] = None
+    legal_name: Optional[str] = None
+    trade_name: Optional[str] = None
+    account_type: Optional[str] = None
+    tax_id: Optional[str] = None
+    billing_currency: Optional[str] = "INR"
+    service_latitude: Optional[float] = None
+    service_longitude: Optional[float] = None
+    service_address: Optional[str] = None
+    is_archived: bool = False
+    contacts: List[CRMContactResponse] = []
+    addresses: List[CRMAddressResponse] = []
+    documents: List[CRMDocumentResponse] = []
+    activities: List[CRMActivityResponse] = []
+
+class PaginatedCustomersResponse(BaseModel):
+    items: List[CustomerListResponse]
+    total: int
+    page: int
+    page_size: int
+    total_pages: int
+
+# Leads
+class CRMLeadCreate(BaseModel):
+    legal_name: str = Field(..., min_length=2, max_length=255)
+    trade_name: Optional[str] = Field(None, max_length=255)
+    email: Optional[EmailStr] = None
+    phone: Optional[str] = Field(None, max_length=32)
+    market_id: Optional[str] = None
+    account_type: str = Field("RESIDENTIAL", max_length=32)
+    locality: Optional[str] = "Colaba"
+    address_line1: Optional[str] = None
+    city: Optional[str] = None
+    state: Optional[str] = None
+    postal_code: Optional[str] = None
+    notes: Optional[str] = None
+
+class CRMLeadResponse(BaseModel):
+    id: str
+    customer_number: str
+    legal_name: str
+    trade_name: Optional[str] = None
+    email: Optional[str] = None
+    phone: Optional[str] = None
+    market_id: str
+    account_type: str
+    status: str
+    is_converted: bool = False
+    legacy_customer_id: Optional[int] = None
+    created_at: datetime
+    contacts: List[CRMContactResponse] = []
+    addresses: List[CRMAddressResponse] = []
+    activities: List[CRMActivityResponse] = []
+
+class CRMLeadConvertRequest(BaseModel):
+    plan_name: Optional[str] = "Fast 100M"
+    plan_price: Optional[float] = 499.0
+    customer_type: Optional[str] = "Prepaid"
+    locality: Optional[str] = None
+    segment: Optional[str] = "Residential - Standard"
+
+# Customer Maps
+class CustomerMapLocationItem(BaseModel):
+    id: int
+    crm_id: Optional[str] = None
+    customer_code: str
+    name: str
+    customer_type: str
+    status: str
+    locality: str
+    plan_name: str
+    latitude: Optional[float] = None
+    longitude: Optional[float] = None
+    address: Optional[str] = None
+    has_coordinates: bool
+    serviceability_status: Optional[str] = "SERVICEABLE"
+
+class CustomerMapSummaryResponse(BaseModel):
+    market_id: str
+    total_customers: int
+    with_coordinates_count: int
+    missing_coordinates_count: int
+    locations: List[CustomerMapLocationItem]
+
+# Vouchers
+class CRMVoucherResponse(BaseModel):
+    id: str
+    voucher_code: str
+    customer_id: int
+    customer_code: str
+    customer_name: str
+    title: str
+    benefit: str
+    type: str
+    status: str
+    source_module: str
+    expiry_days: int
+    provisioning_dependency: str = "OSS/BSS Billing & Provisioning Engine (Phase 2)"
+    created_at: datetime
+
+
 # Intelligent Journeys Schemas
 class JourneyCustomerItem(BaseModel):
     customer_id: int
@@ -860,4 +1132,126 @@ class CustomerTrackingResponse(BaseModel):
     tracking_active: bool = False
     job_status: Optional[str] = None
     otp: Optional[OtpDetail] = None
+
+
+# ─── Service Provisioning & Automated Service Delivery Schemas ────────────────
+
+class ServicePlanItem(BaseModel):
+    plan_id: str
+    name: str
+    account_type: str
+    billing_type: str
+    price_inr: float
+    speed_mbps: int
+    data_quota_gb: float
+    daily_quota_gb: float
+    validity_days: int
+    segment: str
+    service_vlan: int
+    description: str
+
+
+class ProvisioningOrderCreateRequest(BaseModel):
+    customer_id: int
+    plan_id: str
+    idempotency_key: Optional[str] = None
+    assigned_device_id: Optional[int] = None
+    assigned_device_code: Optional[str] = None
+    assigned_port_id: Optional[int] = None
+    execution_mode: Optional[str] = "SIMULATED"
+
+
+class ProvisioningOrderApproveRequest(BaseModel):
+    notes: Optional[str] = None
+
+
+class ProvisioningOrderCancelRequest(BaseModel):
+    reason: str
+
+
+class ProvisioningLogResponse(BaseModel):
+    id: int
+    order_id: int
+    market_id: str
+    from_status: str
+    to_status: str
+    action: str
+    actor_email: Optional[str] = None
+    actor_role: Optional[str] = None
+    message: str
+    execution_mode: str
+    details: Optional[Dict[str, Any]] = None
+    timestamp: datetime
+
+    class Config:
+        from_attributes = True
+
+
+class ServiceActivationOrderResponse(BaseModel):
+    id: int
+    order_code: str
+    idempotency_key: str
+    market_id: str
+    customer_id: int
+    crm_customer_id: Optional[str] = None
+    customer_name: str
+    customer_code: str
+    account_type: str
+    service_address: Optional[str] = None
+    locality: str
+    serviceability_status: str
+    latitude: Optional[float] = None
+    longitude: Optional[float] = None
+    plan_id: str
+    plan_name: str
+    plan_price: float
+    speed_mbps: int
+    data_quota_gb: float
+    validity_days: int
+    assigned_device_id: Optional[int] = None
+    assigned_device_code: Optional[str] = None
+    assigned_port_id: Optional[int] = None
+    olt_device_code: Optional[str] = None
+    service_vlan: Optional[int] = None
+    radius_username: Optional[str] = None
+    status: str
+    customer_lifecycle_status: str
+    subscription_status: str
+    execution_mode: str
+    provider_name: str
+    telemetry_source: str
+    failure_code: Optional[str] = None
+    failure_reason: Optional[str] = None
+    retry_count: int
+    max_retries: int
+    requested_by_email: Optional[str] = None
+    approved_by_email: Optional[str] = None
+    approved_at: Optional[datetime] = None
+    provisioned_at: Optional[datetime] = None
+    cancelled_at: Optional[datetime] = None
+    cancellation_reason: Optional[str] = None
+    created_at: datetime
+    updated_at: datetime
+    logs: Optional[List[ProvisioningLogResponse]] = []
+
+    class Config:
+        from_attributes = True
+
+
+class CustomerEligibilityResponse(BaseModel):
+    eligible: bool
+    customer_id: int
+    customer_code: str
+    customer_name: str
+    market_id: str
+    locality: str
+    plan: Optional[ServicePlanItem] = None
+    suggested_device_id: Optional[int] = None
+    suggested_device_code: Optional[str] = None
+    suggested_port_id: Optional[int] = None
+    olt_device_code: Optional[str] = None
+    blocking_errors: List[str] = []
+    prerequisites: List[str] = []
+    reasons: List[str] = []
+
 

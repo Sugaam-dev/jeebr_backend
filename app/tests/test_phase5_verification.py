@@ -20,6 +20,16 @@ from app.services.otp_service import _store_dispatch_code, _retrieve_dispatch_co
 client = TestClient(app)
 REDIS_TEST_URL = "redis://127.0.0.1:6379/0"
 
+def _is_redis_available():
+    try:
+        import redis
+        r = redis.from_url(REDIS_TEST_URL, decode_responses=True, socket_connect_timeout=0.2)
+        return r.ping() is True
+    except Exception:
+        return False
+
+redis_available = _is_redis_available()
+
 
 def _get_token(email: str, password: str = "admin123") -> str:
     res = client.post("/api/auth/login", json={"email": email, "password": password})
@@ -184,6 +194,7 @@ def test_gps_full_coordinate_rejection_matrix():
 
 # --- GAP-07: Real Redis Operations ---
 
+@pytest.mark.skipif(not redis_available, reason="Local Redis server not running on 127.0.0.1:6379")
 def test_redis_direct_connection_and_ttl():
     """Verify real Redis communication: SET, GET, TTL, and key expiration."""
     import redis
@@ -206,6 +217,7 @@ def test_redis_direct_connection_and_ttl():
     assert r.get(test_key) is None
 
 
+@pytest.mark.skipif(not redis_available, reason="Local Redis server not running on 127.0.0.1:6379")
 def test_redis_otp_storage_and_retrieval(monkeypatch):
     """Verify distributed OTP storage and retrieval using real Redis."""
     monkeypatch.setattr(settings, "REDIS_URL", REDIS_TEST_URL)
@@ -234,6 +246,7 @@ def test_redis_otp_storage_and_retrieval(monkeypatch):
     r.delete(f"otp:dispatch:{ticket_id}")
 
 
+@pytest.mark.skipif(not redis_available, reason="Local Redis server not running on 127.0.0.1:6379")
 @pytest.mark.anyio
 async def test_redis_sliding_window_rate_limiter(monkeypatch):
     """Verify distributed rate limiter using real Redis pttl."""
@@ -263,6 +276,7 @@ async def test_redis_sliding_window_rate_limiter(monkeypatch):
     r.delete(f"rate_limit:engineer_ping:{engineer_id}")
 
 
+@pytest.mark.skipif(not redis_available, reason="Local Redis server not running on 127.0.0.1:6379")
 def test_health_check_endpoint_redis_integration(monkeypatch):
     """Verify /health endpoint reports real Redis connection and latency."""
     monkeypatch.setattr(settings, "REDIS_URL", REDIS_TEST_URL)

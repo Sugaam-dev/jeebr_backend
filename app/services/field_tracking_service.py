@@ -334,6 +334,10 @@ async def record_location_ping_async(
     return ping
 
 
+import threading
+
+_completion_lock = threading.Lock()
+
 def execute_ticket_completion_transaction(
     db: Session,
     assignment: FieldAssignment,
@@ -345,103 +349,107 @@ def execute_ticket_completion_transaction(
     Strictly enforces that customer OTP was verified beforehand (backend check on otp_verified_at).
     Closes ticket, marks assignment COMPLETED, stops tracking session, and logs audit record.
     """
-    # Atomically lock assignment row to prevent concurrent completion race conditions
-    locked_assignment = db.query(FieldAssignment).filter(
-        FieldAssignment.id == assignment.id
-    ).populate_existing().with_for_update().first()
-    if not locked_assignment:
-        raise HTTPException(status_code=404, detail="Field assignment not found.")
-    assignment = locked_assignment
+    with _completion_lock:
+        # Atomically lock assignment row to prevent concurrent completion race conditions
+        locked_assignment = db.query(FieldAssignment).filter(
+            FieldAssignment.id == assignment.id
+        ).populate_existing().with_for_update().first()
+        if not locked_assignment:
+            raise HTTPException(status_code=404, detail="Field assignment not found.")
+        assignment = locked_assignment
 
-    # Reject duplicate completion if already completed (race condition protection)
-    if assignment.status == "COMPLETED":
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Cannot complete job: Job is already completed and closed."
-        )
+        # Reject duplicate completion if already completed (race condition protection)
+        if assignment.status == "COMPLETED":
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Cannot complete job: Job is already completed and closed."
+            )
 
-    if assignment.status != "OTP_VERIFIED" or not assignment.otp_verified_at:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Cannot complete job: Customer confirmation OTP has not been verified. "
-                   "Engineer must verify customer OTP before closure."
-        )
+        if assignment.status != "OTP_VERIFIED" or not assignment.otp_verified_at:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Cannot complete job: Customer confirmation OTP has not been verified. "
+                       "Engineer must verify customer OTP before closure."
+            )
 
-    now = datetime.utcnow()
-    ticket = assignment.ticket
-    if not ticket:
-        raise HTTPException(status_code=404, detail="Associated ticket not found.")
+        now = datetime.utcnow()
+        ticket = assignment.ticket
+        if not ticket:
+            raise HTTPException(status_code=404, detail="Associated ticket not found.")
 
-    try:
-        # 1. Complete Field Assignment
-        assignment.status = "COMPLETED"
-        assignment.completed_at = now
-        if notes:
-            assignment.notes = (assignment.notes or "") + f"\n[{now.strftime('%Y-%m-%d %H:%M')}] Closure: {notes}"
+        try:
+            # 1. Complete Field Assignment
+            assignment.status = "COMPLETED"
+            assignment.completed_at = now
+            if notes:
+                assignment.notes = (assignment.notes or "") + f"\n[{now.strftime('%Y-%m-%d %H:%M')}] Closure: {notes}"
 
-        # 2. Stop Tracking Session
-        active_session = db.query(TrackingSession).filter(
-            TrackingSession.field_assignment_id == assignment.id,
-            TrackingSession.status == "ACTIVE"
-        ).first()
-        if active_session:
-            active_session.status = "STOPPED"
-            active_session.ended_at = now
+            # 2. Stop Tracking Session
+            active_session = db.query(TrackingSession).filter(
+                TrackingSession.field_assignment_id == assignment.id,
+                TrackingSession.status == "ACTIVE"
+            ).first()
+            if active_session:
+                active_session.status = "STOPPED"
+                active_session.ended_at = now
 
-        # 3. Resolve Ticket
-        ticket.status = "Resolved"
-        ticket.resolved_at = now
+            # 3. Resolve Ticket
+            ticket.status = "Resolved"
+            ticket.resolved_at = now
 
-        # 4. Release Resource Workload Capacity
-        engineer = assignment.engineer
-        if engineer:
-            engineer.location_status = "UNAVAILABLE"
-            active_count = db.query(func.count(Ticket.id)).filter(
-                Ticket.assigned_resource_id == engineer.id,
-                Ticket.status.notin_(["Resolved", "Closed", "Rejected"])
-            ).scalar() or 0
-            engineer.active_tickets_count = max(0, active_count - 1)
-            if engineer.active_tickets_count < engineer.max_capacity:
-                engineer.status = "Available"
+            # 4. Release Resource Workload Capacity
+            engineer = assignment.engineer
+            if engineer:
+                engineer.location_status = "UNAVAILABLE"
+                active_count = db.query(func.count(Ticket.id)).filter(
+                    Ticket.assigned_resource_id == engineer.id,
+                    Ticket.status.notin_(["Resolved", "Closed", "Rejected"])
+                ).scalar() or 0
+                engineer.active_tickets_count = max(0, active_count - 1)
+                if engineer.active_tickets_count < engineer.max_capacity:
+                    engineer.status = "Available"
 
-        # 5. Commit Governance Audit Event
-        audit = AuditLog(
-            market_id=assignment.market_id,
-            recommendation_id=None,
-            source_module="Field Operations",
-            action_taken=f"Ticket {ticket.ticket_code} completed via verified Customer OTP",
-            decision="JOB_COMPLETED",
-            user_id=user.id,
-            user_name=user.full_name,
-            user_role=user.role,
-            confidence_score=1.0,
-            original_signals={
-                "ticket_id": ticket.id,
-                "assignment_id": assignment.id,
-                "engineer_id": engineer.id if engineer else None,
-                "otp_verified_at": assignment.otp_verified_at.isoformat()
-            },
-            execution_result={
-                "ticket_status": "Resolved",
-                "assignment_status": "COMPLETED",
-                "tracking_status": "STOPPED"
-            },
-            timestamp=now
-        )
-        db.add(audit)
-        db.commit()
+            # 5. Commit Governance Audit Event
+            audit = AuditLog(
+                market_id=assignment.market_id,
+                recommendation_id=None,
+                source_module="Field Operations",
+                action_taken=f"Ticket {ticket.ticket_code} completed via verified Customer OTP",
+                decision="JOB_COMPLETED",
+                user_id=user.id,
+                user_name=user.full_name,
+                user_role=user.role,
+                confidence_score=1.0,
+                original_signals={
+                    "ticket_id": ticket.id,
+                    "assignment_id": assignment.id,
+                    "engineer_id": engineer.id if engineer else None,
+                    "otp_verified_at": assignment.otp_verified_at.isoformat()
+                },
+                execution_result={
+                    "ticket_status": "Resolved",
+                    "assignment_status": "COMPLETED",
+                    "tracking_status": "STOPPED"
+                },
+                timestamp=now
+            )
+            db.add(audit)
+            db.commit()
 
-        db.refresh(assignment)
-        db.refresh(ticket)
-        return assignment, ticket
+            db.refresh(assignment)
+            db.refresh(ticket)
+            return assignment, ticket
 
-    except Exception as e:
-        db.rollback()
-        logger.error(f"Failed to complete ticket transaction: {e}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Transactional ticket closure failed: {str(e)}"
-        )
+        except HTTPException:
+            db.rollback()
+            raise
+        except Exception as e:
+            db.rollback()
+            logger.error(f"Failed to complete ticket transaction: {e}")
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Transactional ticket closure failed: {str(e)}"
+            )
 
 
 def get_field_operations_summary(db: Session, market_id: str) -> dict:

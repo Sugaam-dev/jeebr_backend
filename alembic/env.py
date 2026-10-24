@@ -9,11 +9,30 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')
 from app.config import settings
 from app.database import Base
 from app.models import (
-    User, Node, Customer, UsageRecord, Ticket, Invoice, Recommendation, AuditLog
+    User, Node, Customer, UsageRecord, Resource, Ticket, Invoice,
+    Recommendation, AuditLog, ApprovalCallLog, FieldAssignment,
+    TrackingSession, LocationPing, FieldOtp, Role, Permission, RolePermission,
+    NetworkDevice, OLTPort, NetworkLink, NetworkAlarm,
+    DeviceMetricThreshold, DeviceMetricRecord
 )
 
 config = context.config
-config.set_main_option("sqlalchemy.url", settings.DATABASE_URL)
+
+# Allow explicit environment variable override for isolated test/local migrations
+target_url = os.getenv("ALEMBIC_DATABASE_URL") or os.getenv("DATABASE_URL") or settings.DATABASE_URL
+if target_url.startswith("postgres://"):
+    target_url = target_url.replace("postgres://", "postgresql://", 1)
+
+# Remote Supabase Migration Safety Guard
+is_remote_supabase = any(host in target_url.lower() for host in ("supabase.com", "supabase.co", "pooler.supabase"))
+if is_remote_supabase and os.getenv("PREVENT_REMOTE_MIGRATIONS", "1") == "1":
+    if not os.getenv("ALLOW_REMOTE_MIGRATIONS_CONFIRMED"):
+        raise RuntimeError(
+            "SAFETY VIOLATION: Execution of migrations against shared or remote Supabase is blocked. "
+            "To migrate an isolated local database, specify ALEMBIC_DATABASE_URL or set DATABASE_URL."
+        )
+
+config.set_main_option("sqlalchemy.url", target_url)
 
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)

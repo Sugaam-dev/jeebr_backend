@@ -86,6 +86,7 @@ class Customer(Base):
     usage_records = relationship('UsageRecord', back_populates='customer', cascade='all, delete-orphan')
     tickets = relationship('Ticket', back_populates='customer', cascade='all, delete-orphan')
     invoices = relationship('Invoice', back_populates='customer', cascade='all, delete-orphan')
+    crm_account = relationship('CRMCustomer', back_populates='legacy_customer', uselist=False)
 
 
 class UsageRecord(Base):
@@ -551,5 +552,20 @@ class DeviceMetricRecord(Base):
 
     # Relationships
     device = relationship('NetworkDevice', back_populates='metric_records')
+
+
+# Phase 1: CRM Foundation Models
+from app.models_crm import (
+    CRMCustomer, CRMContact, CRMAddress, CRMDocument, CRMAccountUser, CRMActivity,
+    AccountType, CustomerLifecycleStatus, ContactRole, AddressType,
+    ServiceabilityStatus, DocumentType, DocumentUploadStatus, VerificationStatus,
+    PortalRole, ActivityType
+)
+
+# Service Provisioning & Automated Service Delivery Models
+from app.models_provisioning import (
+    ServiceActivationOrder, ProvisioningLog, ProvisioningStatus, ExecutionMode
+)
+
 
 

@@ -6,12 +6,25 @@ db_url = settings.DATABASE_URL
 if db_url.startswith("postgres://"):
     db_url = db_url.replace("postgres://", "postgresql://", 1)
 
-engine = create_engine(
-    db_url,
-    pool_pre_ping=True,
-    pool_size=20,
-    max_overflow=10
-)
+# Supabase Transaction Pooler: Port 6543 supports high-concurrency transaction mode,
+# preventing EMAXCONNSESSION (15 max clients in session mode on port 5432).
+if "pooler.supabase.com" in db_url and ":5432/" in db_url:
+    db_url = db_url.replace(":5432/", ":6543/")
+
+if db_url.startswith("sqlite"):
+    engine = create_engine(
+        db_url,
+        connect_args={"check_same_thread": False}
+    )
+else:
+    engine = create_engine(
+        db_url,
+        pool_pre_ping=True,
+        pool_size=5,
+        max_overflow=5,
+        pool_recycle=300,
+        pool_timeout=30
+    )
 
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, expire_on_commit=False, bind=engine)
 

@@ -5,110 +5,30 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.config import settings
 from app.database import engine, Base
 from app.routers import (
-    auth, customers, assurance, churn, journeys, orchestration, revenue, governance, cockpit, pilot_bundle, ticketing, field_operations, olt_telemetry, rbac, network
+    auth, customers, assurance, churn, journeys, orchestration, revenue, governance, cockpit, pilot_bundle, ticketing, field_operations, olt_telemetry, rbac, network, provisioning
 )
 from app import markets
 
 logger = logging.getLogger(__name__)
 
-# Create database tables
-Base.metadata.create_all(bind=engine)
-
-def ensure_ticket_columns():
-    """Ensure newly added ticketing columns, field operations tables and columns exist in the database."""
-    from sqlalchemy import text
+def check_schema_compatibility(db_engine):
+    """
+    Read-only startup diagnostic: verifies essential tables exist without performing DDL.
+    Does NOT create, alter, or drop tables or columns.
+    """
+    import sqlalchemy as sa
     try:
-        # Re-run create_all for newly added models
-        Base.metadata.create_all(bind=engine)
-        with engine.connect() as conn:
-            try:
-                conn.execute(text("SET lock_timeout = '2s';"))
-            except Exception:
-                pass
-            columns_to_add = [
-                ("source", "VARCHAR(50) DEFAULT 'CUSTOMER'"),
-                ("region", "VARCHAR(100)"),
-                ("assigned_resource_id", "INTEGER REFERENCES resources(id)"),
-                ("assigned_at", "TIMESTAMP"),
-                ("approval_status", "VARCHAR(50) DEFAULT 'NOT_REQUIRED'"),
-                ("approved_by_id", "INTEGER REFERENCES users(id)"),
-                ("approved_at", "TIMESTAMP"),
-                ("approval_notes", "TEXT"),
-            ]
-            for col, col_def in columns_to_add:
-                try:
-                    conn.execute(text(f"ALTER TABLE tickets ADD COLUMN IF NOT EXISTS {col} {col_def};"))
-                    conn.commit()
-                except Exception:
-                    pass
-            try:
-                conn.execute(text("ALTER TABLE users ADD COLUMN IF NOT EXISTS phone VARCHAR(50) DEFAULT '+91 98200 12345';"))
-                conn.commit()
-            except Exception:
-                pass
-            try:
-                conn.execute(text("ALTER TABLE tickets ALTER COLUMN customer_id DROP NOT NULL;"))
-                conn.commit()
-            except Exception:
-                pass
-
-            # Customer service location columns
-            for col, col_def in [
-                ("service_latitude", "FLOAT"),
-                ("service_longitude", "FLOAT"),
-                ("service_address", "VARCHAR(255)")
-            ]:
-                try:
-                    conn.execute(text(f"ALTER TABLE customers ADD COLUMN IF NOT EXISTS {col} {col_def};"))
-                    conn.commit()
-                except Exception:
-                    pass
-
-            # Resource location and user_id columns
-            for col, col_def in [
-                ("user_id", "INTEGER REFERENCES users(id)"),
-                ("current_latitude", "FLOAT"),
-                ("current_longitude", "FLOAT"),
-                ("last_ping_at", "TIMESTAMP"),
-                ("location_status", "VARCHAR(50) DEFAULT 'UNAVAILABLE'")
-            ]:
-                try:
-                    conn.execute(text(f"ALTER TABLE resources ADD COLUMN IF NOT EXISTS {col} {col_def};"))
-                    conn.commit()
-                except Exception:
-                    pass
-
-            # Location ping is_mock column
-            try:
-                conn.execute(text("ALTER TABLE location_pings ADD COLUMN IF NOT EXISTS is_mock BOOLEAN DEFAULT FALSE;"))
-                conn.commit()
-            except Exception:
-                pass
-
-            # Customers financial & signup defaults
-            for col, default_val in [
-                ("arpu", "295.0"),
-                ("actual_arpu", "295.0"),
-                ("revenue_30d", "295.0"),
-                ("plan_price", "299.0"),
-                ("signup_date", "NOW()")
-            ]:
-                try:
-                    conn.execute(text(f"ALTER TABLE customers ALTER COLUMN {col} SET DEFAULT {default_val};"))
-                    conn.commit()
-                except Exception:
-                    pass
-
-            # Field OTPs dispatch_code column
-            try:
-                conn.execute(text("ALTER TABLE field_otps ADD COLUMN IF NOT EXISTS dispatch_code VARCHAR(16);"))
-                conn.commit()
-            except Exception:
-                pass
-    except Exception:
-        pass
-
-ensure_ticket_columns()
+        inspector = sa.inspect(db_engine)
+        existing_tables = set(inspector.get_table_names())
+        required_tables = {'users', 'nodes', 'customers', 'tickets'}
+        missing = required_tables - existing_tables
+        if missing:
+            logger.warning("Database schema compatibility diagnostic: missing tables %s. Ensure Alembic migrations are applied.", missing)
+            return False
+        return True
+    except Exception as exc:
+        logger.warning("Unable to verify database schema compatibility: %s", exc)
+        return False
 
 app = FastAPI(
     title=settings.PROJECT_NAME,
@@ -208,6 +128,14 @@ app.include_router(field_operations.router, prefix=f"{settings.API_V1_STR}/field
 app.include_router(olt_telemetry.router, prefix=settings.API_V1_STR)
 app.include_router(rbac.router, prefix=settings.API_V1_STR)
 app.include_router(network.router, prefix=settings.API_V1_STR)
+app.include_router(provisioning.router, prefix=settings.API_V1_STR)
+
+@app.on_event("startup")
+def on_startup():
+    try:
+        check_schema_compatibility(engine)
+    except Exception as exc:
+        logger.error(f"Database schema compatibility check notice: {exc}")
 
 @app.get("/")
 def root():
