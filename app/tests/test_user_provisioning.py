@@ -52,6 +52,14 @@ def _get_user_token(email: str, role: str) -> str:
                 user.role = role
                 user.is_active = True
                 db.commit()
+
+        if role != "SUPER_ADMIN":
+            from app.models import UserMarketAssignment
+            existing_m = db.query(UserMarketAssignment).filter(UserMarketAssignment.user_id == user.id).first()
+            if not existing_m:
+                db.add(UserMarketAssignment(user_id=user.id, market_id="mumbai", is_primary=True))
+                db.commit()
+
         return create_access_token(data={"sub": user.email, "role": user.role, "market": "mumbai"})
     finally:
         db.close()

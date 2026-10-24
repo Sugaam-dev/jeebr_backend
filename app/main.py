@@ -1,11 +1,11 @@
 import logging
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Request, Response, status
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from app.config import settings
 from app.database import engine, Base
 from app.routers import (
-    auth, customers, assurance, churn, journeys, orchestration, revenue, governance, cockpit, pilot_bundle, ticketing, field_operations, olt_telemetry, rbac, network, provisioning
+    auth, customers, assurance, churn, journeys, orchestration, revenue, governance, cockpit, pilot_bundle, ticketing, field_operations, olt_telemetry, rbac, network, provisioning, finance
 )
 from app import markets
 
@@ -129,6 +129,7 @@ app.include_router(olt_telemetry.router, prefix=settings.API_V1_STR)
 app.include_router(rbac.router, prefix=settings.API_V1_STR)
 app.include_router(network.router, prefix=settings.API_V1_STR)
 app.include_router(provisioning.router, prefix=settings.API_V1_STR)
+app.include_router(finance.router, prefix=settings.API_V1_STR)
 
 @app.on_event("startup")
 def on_startup():
@@ -146,19 +147,78 @@ def root():
         "loop": "Observe -> Predict -> Recommend -> Approve -> Execute -> Learn"
     }
 
-@app.get("/health")
-@app.get(f"{settings.API_V1_STR}/health")
-def health_check():
-    from datetime import datetime
+def check_database_connectivity(timeout_seconds: float = 2.0):
+    """
+    Lightweight, bounded database connectivity ping.
+    Executes SELECT 1 with an explicit statement timeout.
+    Safely releases connection back to the connection pool upon block exit.
+    Never exposes internal queries, hostnames, or raw error messages.
+    Returns: (status: 'connected' | 'disconnected', latency_ms: Optional[float])
+    """
     import time
-    health_data = {
-        "status": "healthy",
+    from sqlalchemy import text
+    try:
+        t0 = time.time()
+        with engine.connect() as conn:
+            if engine.dialect.name == "postgresql":
+                conn.execute(text(f"SET statement_timeout = {int(timeout_seconds * 1000)};"))
+            row = conn.execute(text("SELECT 1;")).scalar()
+            if row == 1:
+                latency = round((time.time() - t0) * 1000, 2)
+                return ("connected", latency)
+        return ("disconnected", None)
+    except Exception as exc:
+        logger.warning("Database connectivity health check notice: %s", type(exc).__name__)
+        return ("disconnected", None)
+
+@app.get("/health/live")
+@app.get(f"{settings.API_V1_STR}/health/live")
+def liveness_probe():
+    """Liveness probe: verifies process execution loop is alive."""
+    from datetime import datetime
+    return {
+        "status": "alive",
         "timestamp": datetime.utcnow().isoformat(),
         "environment": settings.ENVIRONMENT
     }
 
-    # Redis health & readiness verification (Section 18)
+@app.get("/health/ready")
+@app.get(f"{settings.API_V1_STR}/health/ready")
+def readiness_probe(response: Response):
+    """Readiness probe: verifies essential dependency (PostgreSQL) is ready to serve queries."""
+    from datetime import datetime
+    db_status, db_latency = check_database_connectivity(timeout_seconds=2.0)
+    is_ready = (db_status == "connected")
+    if not is_ready:
+        response.status_code = status.HTTP_503_SERVICE_UNAVAILABLE
+    return {
+        "status": "ready" if is_ready else "not_ready",
+        "database": {
+            "status": db_status,
+            "latency_ms": db_latency
+        },
+        "timestamp": datetime.utcnow().isoformat(),
+        "environment": settings.ENVIRONMENT
+    }
+
+@app.get("/health")
+@app.get(f"{settings.API_V1_STR}/health")
+def health_check(response: Response):
+    """
+    Comprehensive health check: reports overall platform health and individual subsystem diagnostics.
+    Returns HTTP 200 when healthy, HTTP 503 when mandatory dependencies (PostgreSQL) fail.
+    Never exposes internal credentials, queries, or raw stack traces.
+    """
+    from datetime import datetime
+    import time
+
+    # 1. Database connectivity (Mandatory required dependency)
+    db_status, db_latency = check_database_connectivity(timeout_seconds=2.0)
+
+    # 2. Redis status (Optional / in-memory fallback unless configured)
+    redis_info = {"status": "not_configured", "installed": True, "mode": "in_memory_fallback"}
     redis_url = getattr(settings, "REDIS_URL", None)
+    redis_healthy = True
     if redis_url and redis_url.strip():
         try:
             import redis
@@ -166,25 +226,37 @@ def health_check():
             r = redis.from_url(redis_url.strip(), decode_responses=True)
             ping_ok = r.ping()
             latency_ms = round((time.time() - start) * 1000, 2)
-            health_data["redis"] = {
+            redis_info = {
                 "status": "connected" if ping_ok else "unresponsive",
                 "installed": True,
                 "latency_ms": latency_ms
             }
-        except Exception as e:
-            health_data["redis"] = {
+            if not ping_ok:
+                redis_healthy = False
+        except Exception:
+            redis_info = {
                 "status": "disconnected",
-                "installed": True,
-                "error": str(e)
+                "installed": True
             }
-            if settings.ENVIRONMENT.lower() in ("production", "prod"):
-                health_data["status"] = "degraded"
-    else:
-        health_data["redis"] = {
-            "status": "not_configured",
-            "installed": True,
-            "mode": "in_memory_fallback"
-        }
+            redis_healthy = False
 
-    return health_data
+    # 3. Overall status evaluation
+    if db_status != "connected":
+        response.status_code = status.HTTP_503_SERVICE_UNAVAILABLE
+        overall_status = "unhealthy"
+    elif not redis_healthy and settings.ENVIRONMENT.lower() in ("production", "prod"):
+        overall_status = "degraded"
+    else:
+        overall_status = "healthy"
+
+    return {
+        "status": overall_status,
+        "timestamp": datetime.utcnow().isoformat(),
+        "environment": settings.ENVIRONMENT,
+        "database": {
+            "status": db_status,
+            "latency_ms": db_latency
+        },
+        "redis": redis_info
+    }
 

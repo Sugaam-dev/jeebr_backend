@@ -34,6 +34,8 @@ class UserResponse(BaseModel):
     is_active: bool = True
     rank: int = 10
     permissions: List[str] = []
+    market_ids: List[str] = []
+    primary_market: Optional[str] = None
 
     class Config:
         from_attributes = True
@@ -48,6 +50,8 @@ class AdminUserCreateRequest(BaseModel):
     phone: Optional[str] = None
     region: Optional[str] = None
     market_id: Optional[str] = None
+    market_ids: Optional[List[str]] = None
+    primary_market: Optional[str] = None
 
     @model_validator(mode='after')
     def resolve_name(self):
@@ -65,6 +69,8 @@ class AdminUserUpdateRequest(BaseModel):
     phone: Optional[str] = None
     region: Optional[str] = None
     market_id: Optional[str] = None
+    market_ids: Optional[List[str]] = None
+    primary_market: Optional[str] = None
 
 class UserStatusUpdateRequest(BaseModel):
     is_active: bool
@@ -1253,5 +1259,340 @@ class CustomerEligibilityResponse(BaseModel):
     blocking_errors: List[str] = []
     prerequisites: List[str] = []
     reasons: List[str] = []
+
+
+# ─── SentinelOS Finance & Billing Schemas ─────────────────────────────────────
+
+class BillingAccountResponse(BaseModel):
+    id: Any
+    account_number: str
+    customer_id: Optional[int] = None
+    crm_customer_id: Optional[Any] = None
+    customer_name: Optional[str] = None
+    customer_code: Optional[str] = None
+    market_id: str
+    billing_type: str
+    currency: str
+    balance: float
+    credit_limit: float
+    status: str
+    payment_term_days: int
+    auto_pay_enabled: bool
+    created_at: datetime
+    updated_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+class BillingAccountCreateRequest(BaseModel):
+    customer_id: int
+    billing_type: Optional[str] = "POSTPAID"
+    currency: Optional[str] = "INR"
+    credit_limit: Optional[float] = 0.0
+    payment_term_days: Optional[int] = 15
+
+
+class BillingSubscriptionResponse(BaseModel):
+    id: Any
+    subscription_code: str
+    billing_account_id: Any
+    customer_id: int
+    crm_customer_id: Optional[Any] = None
+    customer_name: Optional[str] = None
+    market_id: str
+    plan_id: str
+    plan_name: str
+    billing_type: str
+    billing_frequency: str
+    unit_price: float
+    currency: str
+    status: str
+    start_date: datetime
+    current_period_start: datetime
+    current_period_end: datetime
+    next_billing_date: Optional[datetime] = None
+    cancelled_at: Optional[datetime] = None
+    cancellation_reason: Optional[str] = None
+    provisioning_order_id: Optional[int] = None
+    created_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+class BillingSubscriptionCreateRequest(BaseModel):
+    billing_account_id: Optional[str] = None
+    customer_id: int
+    plan_id: str
+    billing_frequency: Optional[str] = "MONTHLY"
+    start_date: Optional[datetime] = None
+    provisioning_order_id: Optional[int] = None
+
+
+class SubscriptionTransitionRequest(BaseModel):
+    target_status: str  # ACTIVE, SUSPENDED, CANCELLED
+    reason: Optional[str] = None
+
+
+class InvoiceLineItemResponse(BaseModel):
+    id: Any
+    invoice_id: int
+    subscription_id: Optional[Any] = None
+    description: str
+    quantity: float
+    unit_price: float
+    amount: float
+    tax_rate: float
+    tax_amount: float
+    discount_amount: float
+    total_amount: float
+    currency: str
+
+    class Config:
+        from_attributes = True
+
+
+class InvoiceDetailResponse(BaseModel):
+    id: int
+    market_id: str
+    invoice_code: str
+    customer_id: int
+    customer_name: Optional[str] = None
+    customer_code: Optional[str] = None
+    billing_account_id: Optional[Any] = None
+    subscription_id: Optional[Any] = None
+    plan_name: str
+    transaction_type: str
+    payment_method: str
+    billed_amount: float
+    subtotal: float
+    tax_amount: float
+    discount_amount: float
+    total_amount: float
+    paid_amount: float
+    outstanding_amount: float
+    currency: str
+    due_date: datetime
+    paid_date: Optional[datetime] = None
+    status: str
+    billing_period_start: Optional[datetime] = None
+    billing_period_end: Optional[datetime] = None
+    idempotency_key: Optional[str] = None
+    notes: Optional[str] = None
+    created_at: datetime
+    line_items: List[InvoiceLineItemResponse] = []
+
+    class Config:
+        from_attributes = True
+
+
+class InvoiceCreateRequest(BaseModel):
+    subscription_id: str
+    billing_period_start: Optional[datetime] = None
+    billing_period_end: Optional[datetime] = None
+    discount_amount: Optional[float] = 0.0
+    tax_rate: Optional[float] = 18.0
+    notes: Optional[str] = None
+    idempotency_key: Optional[str] = None
+
+
+class PaymentAllocationResponse(BaseModel):
+    id: Any
+    payment_id: Any
+    invoice_id: int
+    invoice_code: Optional[str] = None
+    allocated_amount: float
+    currency: str
+    allocated_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+class PaymentResponse(BaseModel):
+    id: Any
+    payment_reference: str
+    billing_account_id: Any
+    customer_id: int
+    customer_name: Optional[str] = None
+    customer_code: Optional[str] = None
+    market_id: str
+    amount: float
+    currency: str
+    payment_method: str
+    provider_name: str
+    provider_transaction_id: Optional[str] = None
+    status: str
+    allocated_amount: float
+    unallocated_amount: float
+    failure_reason: Optional[str] = None
+    is_simulated: bool
+    payment_date: datetime
+    created_at: datetime
+    allocations: List[PaymentAllocationResponse] = []
+
+    class Config:
+        from_attributes = True
+
+
+class PaymentRecordRequest(BaseModel):
+    billing_account_id: Optional[str] = None
+    customer_id: Optional[int] = None
+    amount: float
+    currency: Optional[str] = "INR"
+    payment_method: Optional[str] = "UPI"
+    invoice_id: Optional[int] = None
+    idempotency_key: str
+    provider_name: Optional[str] = "SIMULATED_GATEWAY"
+    auto_allocate: Optional[bool] = True
+
+
+class CreditNoteResponse(BaseModel):
+    id: Any
+    credit_note_code: str
+    billing_account_id: Any
+    invoice_id: Optional[int] = None
+    market_id: str
+    amount: float
+    currency: str
+    reason: str
+    status: str
+    created_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+class CreditNoteCreateRequest(BaseModel):
+    billing_account_id: str
+    invoice_id: Optional[int] = None
+    amount: float
+    reason: str
+
+
+class RefundRecordResponse(BaseModel):
+    id: Any
+    refund_code: str
+    payment_id: Any
+    billing_account_id: Any
+    market_id: str
+    amount: float
+    currency: str
+    reason: str
+    status: str
+    created_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+class RefundCreateRequest(BaseModel):
+    payment_id: str
+    amount: float
+    reason: str
+
+
+class JournalLineResponse(BaseModel):
+    id: Any
+    account_code: str
+    account_name: str
+    debit: float
+    credit: float
+    currency: str
+
+    class Config:
+        from_attributes = True
+
+
+class JournalEntryResponse(BaseModel):
+    id: Any
+    entry_number: str
+    market_id: str
+    reference_type: str
+    reference_id: str
+    description: str
+    posted_at: datetime
+    is_reversed: bool
+    created_at: datetime
+    lines: List[JournalLineResponse] = []
+    total_debit: Optional[float] = None
+    total_credit: Optional[float] = None
+    is_balanced: Optional[bool] = None
+
+    class Config:
+        from_attributes = True
+
+
+class LedgerBalanceResponse(BaseModel):
+    account_code: str
+    account_name: str
+    total_debit: float
+    total_credit: float
+    net_balance: float
+    currency: str
+
+
+class VoucherRedeemRequest(BaseModel):
+    customer_id: int
+    voucher_code: str
+    voucher_type: str
+    idempotency_key: Optional[str] = None
+    invoice_id: Optional[int] = None
+
+
+class VoucherRedemptionResponse(BaseModel):
+    id: Any
+    voucher_code: str
+    voucher_type: str
+    customer_id: int
+    customer_name: Optional[str] = None
+    customer_code: Optional[str] = None
+    market_id: str
+    status: str
+    benefit_details: Dict[str, Any] = {}
+    financial_credit_amount: float
+    invoice_id: Optional[int] = None
+    provisioning_order_id: Optional[int] = None
+    failure_reason: Optional[str] = None
+    redeemed_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+class FinanceOverviewResponse(BaseModel):
+    currency: str
+    date_range: str
+    total_invoiced_amount: float
+    total_collected_amount: float
+    total_receivables: float
+    overdue_invoices_count: int
+    overdue_invoices_balance: float
+    active_subscriptions_count: int
+    active_billing_accounts_count: int
+    recent_payments_count: int
+    recent_payments: List[PaymentResponse] = []
+    recent_invoices: List[InvoiceDetailResponse] = []
+    gateway_status: Dict[str, Any] = {}
+
+
+class BillingRunJobResponse(BaseModel):
+    status: str
+    market_id: str
+    subscriptions_evaluated: int
+    invoices_generated: int
+    total_amount_billed: float
+    currency: str
+    timestamp: datetime
+
+
+class GatewayStatusResponse(BaseModel):
+    live_payments_available: bool
+    active_provider: str
+    configured_gateways: List[str]
+    mode: str
+    reason: str
+
 
 

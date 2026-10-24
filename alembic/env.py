@@ -9,7 +9,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')
 from app.config import settings
 from app.database import Base
 from app.models import (
-    User, Node, Customer, UsageRecord, Resource, Ticket, Invoice,
+    User, UserMarketAssignment, Node, Customer, UsageRecord, Resource, Ticket, Invoice,
     Recommendation, AuditLog, ApprovalCallLog, FieldAssignment,
     TrackingSession, LocationPing, FieldOtp, Role, Permission, RolePermission,
     NetworkDevice, OLTPort, NetworkLink, NetworkAlarm,

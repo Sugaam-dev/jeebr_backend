@@ -8,7 +8,7 @@ from jose import jwt, JWTError
 
 from app.config import settings
 from app.database import get_db
-from app.models import User, Resource, Customer
+from app.models import User, Resource, Customer, UserMarketAssignment
 from app.services.rbac_service import is_super_admin, normalize_role_name
 
 security = HTTPBearer(auto_error=False)
@@ -51,18 +51,9 @@ MARKETS: Dict[str, MarketConfig] = {
     )
 }
 
-USER_MARKET_ASSIGNMENTS: Dict[str, Any] = {
-    "noc@pmrg.in": {"markets": ["mumbai", "kolkata"], "primary": "mumbai"},
-    "care@pmrg.in": {"markets": ["mumbai"], "primary": "mumbai"},
-    "revenue@pmrg.in": {"markets": ["mumbai"], "primary": "mumbai"},
-    "executive@pmrg.in": {"markets": ["mumbai", "kolkata"], "primary": "mumbai"},
-    "client@pmrgsolution.com": {"markets": ["mumbai"], "primary": "mumbai"},
-    "admin@pmrg.in": {"markets": ["mumbai", "kolkata"], "primary": "mumbai"},
-    # Explicit server-side assignments for legitimate operational test accounts
-    "admin_prov_test@pmrg.in": {"markets": ["mumbai", "kolkata"], "primary": "mumbai"},
-    "admin@test.sentinel": {"markets": ["mumbai", "kolkata"], "primary": "mumbai"},
-    "noc@test.sentinel": {"markets": ["mumbai", "kolkata"], "primary": "mumbai"},
-}
+# Legacy dictionary retained for backward compatibility with isolated test fixtures.
+# Production authorization is strictly backed by the persistent user_market_assignments database table.
+USER_MARKET_ASSIGNMENTS: Dict[str, Any] = {}
 
 def get_user_from_request(
     request: Request,
@@ -102,6 +93,7 @@ def get_user_from_request(
 def get_user_authorized_markets(user: Optional[User], db: Session) -> Tuple[List[str], Optional[str]]:
     """
     Resolve trusted server-side authorized markets and primary market for a user.
+    Authoritative source of truth is the persistent user_market_assignments database table.
     Returns:
         (authorized_markets: List[str], primary_market: Optional[str])
     """
@@ -114,13 +106,26 @@ def get_user_authorized_markets(user: Optional[User], db: Session) -> Tuple[List
 
     email_clean = user.email.lower().strip()
 
-    # 2. Check explicit server-side user assignments dictionary
-    if email_clean in USER_MARKET_ASSIGNMENTS:
-        cfg = USER_MARKET_ASSIGNMENTS[email_clean]
-        if isinstance(cfg, dict):
-            return (cfg.get("markets", []), cfg.get("primary"))
-        elif isinstance(cfg, list):
-            return (cfg, cfg[0] if len(cfg) == 1 else None)
+    # 2. Authoritative Database-Backed Market Assignments
+    assignments = (
+        db.query(UserMarketAssignment)
+        .filter(UserMarketAssignment.user_id == user.id)
+        .order_by(UserMarketAssignment.is_primary.desc(), UserMarketAssignment.id.asc())
+        .all()
+    )
+    if assignments:
+        valid_markets = [
+            a.market_id.lower().strip()
+            for a in assignments
+            if a.market_id and a.market_id.lower().strip() in MARKETS
+        ]
+        valid_markets = list(dict.fromkeys(valid_markets))
+        if valid_markets:
+            primary = next(
+                (a.market_id.lower().strip() for a in assignments if a.is_primary and a.market_id.lower().strip() in valid_markets),
+                valid_markets[0] if len(valid_markets) == 1 else None
+            )
+            return (valid_markets, primary)
 
     # 3. Check Resource table (Field Engineers & Internal Technicians)
     # SEC-S1-02: Query by canonical foreign key Resource.user_id == user.id first
@@ -169,7 +174,15 @@ def get_user_authorized_markets(user: Optional[User], db: Session) -> Tuple[List
         if m in MARKETS:
             return ([m], m)
 
-    # 5. SEC-S1-01: Zero-trust termination - unassigned user has NO authorized markets.
+    # 5. Legacy test-fixture fallback ONLY if explicitly set in memory during test run
+    if email_clean in USER_MARKET_ASSIGNMENTS:
+        cfg = USER_MARKET_ASSIGNMENTS[email_clean]
+        if isinstance(cfg, dict):
+            return (cfg.get("markets", []), cfg.get("primary"))
+        elif isinstance(cfg, list):
+            return (cfg, cfg[0] if len(cfg) == 1 else None)
+
+    # 6. SEC-S1-01: Zero-trust termination - unassigned user has NO authorized markets.
     # Role-only market access fallback is completely removed.
     return ([], None)
 

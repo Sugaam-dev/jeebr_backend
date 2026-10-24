@@ -97,6 +97,15 @@ def seed_users(db):
             db.flush()
         users[role] = db.query(User).filter(User.email == email).first()
 
+    # Assign persistent database market authorization for operational test users
+    from app.models import UserMarketAssignment
+    for role, u in users.items():
+        if role not in ("SUPER_ADMIN", "Viewer"):
+            db.query(UserMarketAssignment).filter(UserMarketAssignment.user_id == u.id).delete()
+            db.add(UserMarketAssignment(user_id=u.id, market_id="mumbai", is_primary=True))
+            db.add(UserMarketAssignment(user_id=u.id, market_id="kolkata", is_primary=False))
+    db.commit()
+
     # Create a Field Engineer Resource linked to the Field Engineer user
     fe_user = users.get("Field Engineer")
     if fe_user:

@@ -1,9 +1,10 @@
 from datetime import datetime
 from sqlalchemy import (
-    Column, Integer, String, Float, Boolean, DateTime, ForeignKey, JSON, Text
+    Column, Integer, String, Float, Boolean, DateTime, ForeignKey, JSON, Text, Numeric, UniqueConstraint
 )
 from sqlalchemy.orm import relationship
 from app.database import Base
+from app.models_crm import GUID
 
 class User(Base):
     __tablename__ = 'users'
@@ -20,6 +21,25 @@ class User(Base):
     # Relationships
     reviews = relationship('Recommendation', back_populates='reviewer')
     audit_logs = relationship('AuditLog', back_populates='user')
+    market_assignments = relationship('UserMarketAssignment', back_populates='user', foreign_keys='UserMarketAssignment.user_id', cascade='all, delete-orphan')
+
+
+class UserMarketAssignment(Base):
+    __tablename__ = 'user_market_assignments'
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey('users.id', ondelete='CASCADE'), nullable=False, index=True)
+    market_id = Column(String(50), nullable=False, index=True)
+    is_primary = Column(Boolean, default=False, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    created_by_id = Column(Integer, ForeignKey('users.id', ondelete='SET NULL'), nullable=True)
+
+    __table_args__ = (
+        UniqueConstraint('user_id', 'market_id', name='uq_user_market'),
+    )
+
+    user = relationship('User', back_populates='market_assignments', foreign_keys=[user_id])
+    created_by = relationship('User', foreign_keys=[created_by_id])
 
 
 class Node(Base):
@@ -192,7 +212,27 @@ class Invoice(Base):
     leakage_amount = Column(Float, default=0.0)
     created_at = Column(DateTime, default=datetime.utcnow)
 
+    # SentinelOS Finance Domain Extensions (Fixed-precision & Billing Account Linkage)
+    billing_account_id = Column(GUID(), ForeignKey('billing_accounts.id', ondelete='SET NULL'), nullable=True, index=True)
+    subscription_id = Column(GUID(), ForeignKey('billing_subscriptions.id', ondelete='SET NULL'), nullable=True, index=True)
+    currency = Column(String(3), default='INR', nullable=False)
+    subtotal = Column(Numeric(12, 2), default=0.0, nullable=False)
+    tax_amount = Column(Numeric(12, 2), default=0.0, nullable=False)
+    discount_amount = Column(Numeric(12, 2), default=0.0, nullable=False)
+    total_amount = Column(Numeric(12, 2), default=0.0, nullable=False)
+    paid_amount = Column(Numeric(12, 2), default=0.0, nullable=False)
+    outstanding_amount = Column(Numeric(12, 2), default=0.0, nullable=False)
+    billing_period_start = Column(DateTime, nullable=True)
+    billing_period_end = Column(DateTime, nullable=True)
+    idempotency_key = Column(String(100), unique=True, index=True, nullable=True)
+    notes = Column(Text, nullable=True)
+
     customer = relationship('Customer', back_populates='invoices')
+    billing_account = relationship('BillingAccount', back_populates='invoices')
+    subscription = relationship('BillingSubscription')
+    line_items = relationship('InvoiceLineItem', back_populates='invoice', cascade='all, delete-orphan')
+    payment_allocations = relationship('PaymentAllocation', back_populates='invoice', cascade='all, delete-orphan')
+    credit_notes = relationship('CreditNote', back_populates='invoice')
 
 
 class Recommendation(Base):
@@ -566,6 +606,16 @@ from app.models_crm import (
 from app.models_provisioning import (
     ServiceActivationOrder, ProvisioningLog, ProvisioningStatus, ExecutionMode
 )
+
+# SentinelOS Finance & Billing Domain Models
+from app.models_finance import (
+    BillingAccount, BillingSubscription, InvoiceLineItem, Payment,
+    PaymentAllocation, CreditNote, RefundRecord, JournalEntry, JournalLine,
+    VoucherRedemption, BillingAccountStatus, BillingType, SubscriptionStatus,
+    InvoiceStatus, PaymentStatus, PaymentMethod, VoucherType,
+    VoucherRedemptionStatus, ChartOfAccounts
+)
+
 
 
 

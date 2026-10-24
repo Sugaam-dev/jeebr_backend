@@ -49,6 +49,16 @@ PERMISSION_REGISTRY: List[Dict[str, str]] = [
     {"code": "system.health", "name": "System Health", "category": "system", "description": "View platform health diagnostics and status"},
     {"code": "system.configure", "name": "Configure System", "category": "system", "description": "Configure system-wide parameters and toggles"},
     {"code": "audit.view", "name": "View Audit Logs", "category": "audit", "description": "View cryptographic audit trail and governance logs"},
+
+    # Finance & Billing
+    {"code": "finance.view", "name": "View Financial Records", "category": "finance", "description": "View billing accounts, subscriptions, invoices, and payments"},
+    {"code": "invoice.create", "name": "Create Invoices", "category": "finance", "description": "Generate and issue billing invoices and line items"},
+    {"code": "payment.record", "name": "Record Payments", "category": "finance", "description": "Record payments and allocate to invoices"},
+    {"code": "credit.issue", "name": "Issue Credits & Refunds", "category": "finance", "description": "Issue credit notes, adjustments, and refunds"},
+    {"code": "ledger.post", "name": "Post Journal Entries", "category": "finance", "description": "Post and reverse general ledger journal entries"},
+    {"code": "finance.configure", "name": "Configure Finance & Billing", "category": "finance", "description": "Manage billing cycles, tariffs, and tax settings"},
+    {"code": "reconciliation.run", "name": "Run Reconciliation", "category": "finance", "description": "Reconcile payment gateways and billing runs"},
+    {"code": "voucher.redeem", "name": "Redeem Vouchers", "category": "finance", "description": "Redeem CRM customer vouchers with billing and provisioning fulfillment"},
 ]
 
 # Canonical Built-In System Roles with Rank & Permissions
@@ -80,7 +90,8 @@ SYSTEM_ROLES: Dict[str, Dict[str, Any]] = {
         "permissions": [
             "ticket.view", "ticket.approve", "ticket.assign", "ticket.update", "ticket.resolve", "ticket.track",
             "engineer.location.view", "engineer.workload.view",
-            "telemetry.view", "olt.view", "olt.health", "audit.view", "system.health"
+            "telemetry.view", "olt.view", "olt.health", "audit.view", "system.health",
+            "finance.view"
         ]
     },
     "Care": {
@@ -90,7 +101,8 @@ SYSTEM_ROLES: Dict[str, Dict[str, Any]] = {
         "is_system": True,
         "permissions": [
             "ticket.view", "ticket.create", "ticket.update", "ticket.resolve",
-            "audit.view", "system.health"
+            "audit.view", "system.health",
+            "finance.view", "voucher.redeem"
         ]
     },
     "Revenue": {
@@ -99,7 +111,9 @@ SYSTEM_ROLES: Dict[str, Dict[str, Any]] = {
         "rank": 50,
         "is_system": True,
         "permissions": [
-            "ticket.view", "audit.view", "system.health"
+            "ticket.view", "audit.view", "system.health",
+            "finance.view", "invoice.create", "payment.record", "credit.issue",
+            "ledger.post", "reconciliation.run", "voucher.redeem"
         ]
     },
     "Executive": {
@@ -108,7 +122,8 @@ SYSTEM_ROLES: Dict[str, Dict[str, Any]] = {
         "rank": 50,
         "is_system": True,
         "permissions": [
-            "ticket.view", "telemetry.view", "olt.view", "audit.view", "system.health"
+            "ticket.view", "telemetry.view", "olt.view", "audit.view", "system.health",
+            "finance.view"
         ]
     },
     "Field Engineer": {
@@ -128,7 +143,8 @@ SYSTEM_ROLES: Dict[str, Dict[str, Any]] = {
         "rank": 20,
         "is_system": True,
         "permissions": [
-            "ticket.view", "ticket.create", "ticket.track"
+            "ticket.view", "ticket.create", "ticket.track",
+            "finance.view"
         ]
     },
     "Viewer": {
@@ -137,7 +153,8 @@ SYSTEM_ROLES: Dict[str, Dict[str, Any]] = {
         "rank": 10,
         "is_system": True,
         "permissions": [
-            "ticket.view", "telemetry.view", "audit.view"
+            "ticket.view", "telemetry.view", "audit.view",
+            "finance.view"
         ]
     }
 }

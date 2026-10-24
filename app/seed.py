@@ -2,7 +2,7 @@ import random
 from datetime import datetime, timedelta
 from app.database import SessionLocal, engine, Base
 from app.models import (
-    User, Node, Customer, UsageRecord, Ticket, Invoice, Recommendation, AuditLog, Resource,
+    User, UserMarketAssignment, Node, Customer, UsageRecord, Ticket, Invoice, Recommendation, AuditLog, Resource,
     FieldAssignment, TrackingSession, LocationPing, FieldOtp,
     NetworkDevice, OLTPort, NetworkLink, NetworkAlarm
 )
@@ -69,6 +69,29 @@ def seed_database():
                 )
                 db.add(u)
             users.append(u)
+        db.commit()
+
+        # Seed persistent database market assignments for canonical demo users
+        canonical_assignments = {
+            "noc@pmrg.in": (["mumbai", "kolkata"], "mumbai"),
+            "executive@pmrg.in": (["mumbai", "kolkata"], "mumbai"),
+            "admin@pmrg.in": (["mumbai", "kolkata"], "mumbai"),
+            "care@pmrg.in": (["mumbai"], "mumbai"),
+            "revenue@pmrg.in": (["mumbai"], "mumbai"),
+            "client@pmrgsolution.com": (["mumbai"], "mumbai"),
+            "customer@pmrg.in": (["mumbai"], "mumbai"),
+        }
+        for u in users:
+            email_key = u.email.lower().strip()
+            if email_key in canonical_assignments:
+                markets, primary = canonical_assignments[email_key]
+                for m in markets:
+                    existing_assign = db.query(UserMarketAssignment).filter(
+                        UserMarketAssignment.user_id == u.id,
+                        UserMarketAssignment.market_id == m
+                    ).first()
+                    if not existing_assign:
+                        db.add(UserMarketAssignment(user_id=u.id, market_id=m, is_primary=(m == primary)))
         db.commit()
 
         # Seed Mumbai Market

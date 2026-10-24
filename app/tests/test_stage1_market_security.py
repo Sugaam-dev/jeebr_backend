@@ -146,7 +146,23 @@ def setup_stage1_fixtures():
         db.add(res_amb2)
         db.commit()
 
-        # Configure USER_MARKET_ASSIGNMENTS explicitly for trusted test users
+        # Configure persistent UserMarketAssignment records in DB and backwards-compatible dictionary
+        from app.models import UserMarketAssignment
+        db.query(UserMarketAssignment).filter(
+            UserMarketAssignment.user_id.in_([
+                created_users["sec_mumbai_staff@pmrg.in"].id,
+                created_users["sec_multimarket_staff@pmrg.in"].id,
+                cust_user.id,
+                created_users["sec_imposter@pmrg.in"].id,
+            ])
+        ).delete(synchronize_session=False)
+        db.add(UserMarketAssignment(user_id=created_users["sec_mumbai_staff@pmrg.in"].id, market_id="mumbai", is_primary=True))
+        db.add(UserMarketAssignment(user_id=created_users["sec_multimarket_staff@pmrg.in"].id, market_id="mumbai", is_primary=False))
+        db.add(UserMarketAssignment(user_id=created_users["sec_multimarket_staff@pmrg.in"].id, market_id="kolkata", is_primary=False))
+        db.add(UserMarketAssignment(user_id=cust_user.id, market_id="mumbai", is_primary=True))
+        db.add(UserMarketAssignment(user_id=created_users["sec_imposter@pmrg.in"].id, market_id="mumbai", is_primary=True))
+        db.commit()
+
         USER_MARKET_ASSIGNMENTS["sec_mumbai_staff@pmrg.in"] = {"markets": ["mumbai"], "primary": "mumbai"}
         USER_MARKET_ASSIGNMENTS["sec_multimarket_staff@pmrg.in"] = {"markets": ["mumbai", "kolkata"], "primary": None}
         USER_MARKET_ASSIGNMENTS[mumbai_cust.email] = {"markets": ["mumbai"], "primary": "mumbai"}

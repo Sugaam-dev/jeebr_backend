@@ -864,40 +864,53 @@ def list_customer_vouchers(
     customers = query.limit(50).all()
     vouchers: List[CRMVoucherResponse] = []
 
+    from app.models_finance import VoucherRedemption
+    redemptions = {r.voucher_code: r for r in db.query(VoucherRedemption).all()}
+
     for c in customers:
         # 1. 5G Data Booster Voucher for all Prepaid subscribers
         if c.customer_type == "Prepaid":
+            vch_code = f"VCH-5GB-{c.customer_code.replace('CUST-', '')}"
+            is_redeemed = vch_code in redemptions
+            v_status = redemptions[vch_code].status if is_redeemed else ("AVAILABLE" if c.status == "Active" else "PENDING_PROVISIONING")
+            dep_msg = "Fulfilled via SentinelOS Billing & Provisioning Engine" if is_redeemed else "OSS/BSS Billing & Provisioning Engine (Phase 2)"
+
             vouchers.append(CRMVoucherResponse(
                 id=f"vch-5gb-{c.id}",
-                voucher_code=f"VCH-5GB-{c.customer_code.replace('CUST-', '')}",
+                voucher_code=vch_code,
                 customer_id=c.id,
                 customer_code=c.customer_code,
                 customer_name=c.name,
                 title="5GB High-Speed 5G Bonus Data Booster",
                 benefit="5GB Data Booster valid for remaining base pack validity period.",
                 type="DATA_BOOSTER",
-                status="AVAILABLE" if c.status == "Active" else "PENDING_PROVISIONING",
+                status=v_status,
                 source_module="Predictive Churn Engine & Intelligent Journeys",
                 expiry_days=max(3, c.days_to_expiry if c.days_to_expiry else 14),
-                provisioning_dependency="OSS/BSS Billing & Provisioning Engine (Phase 2)",
+                provisioning_dependency=dep_msg,
                 created_at=datetime.utcnow()
             ))
 
         # 2. Retention Concession Voucher for At-Risk subscribers
         if c.status == "At-Risk":
+            vch_code = f"VCH-RET-{c.customer_code.replace('CUST-', '')}"
+            is_redeemed = vch_code in redemptions
+            v_status = redemptions[vch_code].status if is_redeemed else "STAGED"
+            dep_msg = "Fulfilled via SentinelOS Billing & Provisioning Engine" if is_redeemed else "OSS/BSS Billing & Provisioning Engine (Phase 2)"
+
             vouchers.append(CRMVoucherResponse(
                 id=f"vch-retention-{c.id}",
-                voucher_code=f"VCH-RET-{c.customer_code.replace('CUST-', '')}",
+                voucher_code=vch_code,
                 customer_id=c.id,
                 customer_code=c.customer_code,
                 customer_name=c.name,
                 title="Speed Boost & 20% UPI Concession Retention Voucher",
                 benefit="Temporary speed tier boost + 20% UPI renewal concession.",
                 type="SPEED_BOOST",
-                status="STAGED",
+                status=v_status,
                 source_module="Pilot Retention Bundle",
                 expiry_days=7,
-                provisioning_dependency="OSS/BSS Billing & Provisioning Engine (Phase 2)",
+                provisioning_dependency=dep_msg,
                 created_at=datetime.utcnow()
             ))
 

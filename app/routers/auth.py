@@ -1,5 +1,5 @@
 from datetime import datetime
-from typing import List
+from typing import List, Optional, Tuple
 from fastapi import APIRouter, Depends, HTTPException, status, Response, Request
 from sqlalchemy.orm import Session
 from sqlalchemy import func
@@ -223,17 +223,101 @@ def demo_login(role: str, response: Response, db: Session = Depends(get_db)):
         permissions=get_user_permissions(db, user)
     )
 
+def _build_user_response(u: User, db: Session, target_rank: Optional[int] = None) -> UserResponse:
+    from app.markets import get_user_authorized_markets
+    auth_markets, primary_m = get_user_authorized_markets(u, db)
+    return UserResponse(
+        id=u.id,
+        email=u.email,
+        full_name=u.full_name,
+        role=u.role,
+        is_active=u.is_active,
+        rank=target_rank if target_rank is not None else get_role_rank(u.role, db),
+        permissions=get_user_permissions(db, u),
+        market_ids=auth_markets,
+        primary_market=primary_m
+    )
+
+def sync_user_market_assignments(
+    user_id: int,
+    market_ids: Optional[List[str]],
+    primary_market: Optional[str],
+    creator: User,
+    db: Session
+) -> Tuple[List[str], Optional[str]]:
+    """
+    Validate and persist market assignments in user_market_assignments table.
+    Enforces privilege boundary:
+    - Super Admin can assign any valid market in MARKETS.
+    - Non-Super-Admin can ONLY assign markets that they themselves are authorized for.
+    - Unknown or unsupported market identifiers are rejected with HTTP 400.
+    """
+    from app.markets import MARKETS, get_user_authorized_markets
+    from app.models import UserMarketAssignment
+
+    if market_ids is None:
+        return ([], None)
+
+    # 1. Clean and validate requested market IDs
+    clean_markets = []
+    for m in market_ids:
+        if not m or not isinstance(m, str):
+            continue
+        m_clean = m.strip().lower()
+        if m_clean not in MARKETS:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Invalid or unsupported market identifier: '{m}'"
+            )
+        if m_clean not in clean_markets:
+            clean_markets.append(m_clean)
+
+    # 2. Check privilege boundary
+    requester_is_super = is_super_admin(creator.role)
+    if not requester_is_super:
+        creator_markets, _ = get_user_authorized_markets(creator, db)
+        for m in clean_markets:
+            if m not in creator_markets:
+                log_security_event(
+                    db=db,
+                    action=f"Privilege escalation attempt by {creator.email}: cannot grant unauthorized market '{m}'",
+                    decision="ACCESS_DENIED",
+                    user=creator,
+                    endpoint="/api/auth/users",
+                    method="POST"
+                )
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail=f"Forbidden: You do not have authorization to grant market '{m}'. Authorized markets: {creator_markets}"
+                )
+
+    # 3. Resolve primary market
+    clean_primary = primary_market.strip().lower() if primary_market and isinstance(primary_market, str) else None
+    if clean_primary and clean_primary not in clean_markets:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Primary market '{clean_primary}' must be one of the assigned markets: {clean_markets}"
+        )
+    if not clean_primary and len(clean_markets) == 1:
+        clean_primary = clean_markets[0]
+
+    # 4. Persist in database
+    db.query(UserMarketAssignment).filter(UserMarketAssignment.user_id == user_id).delete()
+    for m in clean_markets:
+        assignment = UserMarketAssignment(
+            user_id=user_id,
+            market_id=m,
+            is_primary=(m == clean_primary),
+            created_by_id=creator.id
+        )
+        db.add(assignment)
+    db.commit()
+
+    return (clean_markets, clean_primary)
+
 @router.get("/me", response_model=UserResponse)
 def get_me(current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
-    return UserResponse(
-        id=current_user.id,
-        email=current_user.email,
-        full_name=current_user.full_name,
-        role=current_user.role,
-        is_active=current_user.is_active,
-        rank=get_role_rank(current_user.role),
-        permissions=get_user_permissions(db, current_user)
-    )
+    return _build_user_response(current_user, db)
 
 @router.get("/users", response_model=List[UserResponse])
 def get_users(
@@ -241,18 +325,7 @@ def get_users(
     current_user: User = Depends(require_roles(["Admin"]))
 ):
     users = db.query(User).order_by(User.id.asc()).all()
-    return [
-        UserResponse(
-            id=u.id,
-            email=u.email,
-            full_name=u.full_name,
-            role=u.role,
-            is_active=u.is_active,
-            rank=get_role_rank(u.role),
-            permissions=get_user_permissions(db, u)
-        )
-        for u in users
-    ]
+    return [_build_user_response(u, db) for u in users]
 
 @router.post("/users", response_model=UserResponse, status_code=status.HTTP_201_CREATED)
 def admin_create_user(
@@ -362,6 +435,20 @@ def admin_create_user(
             db.add(new_res)
         db.commit()
 
+    # 7. Persistent Market Authorization Synchronization:
+    requested_markets = req.market_ids
+    if requested_markets is None and req.market_id is not None:
+        requested_markets = [req.market_id] if req.market_id.strip() else []
+
+    if requested_markets is not None:
+        sync_user_market_assignments(
+            user_id=new_user.id,
+            market_ids=requested_markets,
+            primary_market=req.primary_market or req.market_id,
+            creator=current_user,
+            db=db
+        )
+
     log_security_event(
         db=db,
         action=f"User provisioned: {new_user.email} with role {new_user.role} by {current_user.email}",
@@ -376,15 +463,7 @@ def admin_create_user(
         }
     )
 
-    return UserResponse(
-        id=new_user.id,
-        email=new_user.email,
-        full_name=new_user.full_name,
-        role=new_user.role,
-        is_active=new_user.is_active,
-        rank=target_rank,
-        permissions=get_user_permissions(db, new_user)
-    )
+    return _build_user_response(new_user, db, target_rank)
 
 
 @router.put("/users/{user_id}", response_model=UserResponse)
@@ -529,18 +608,29 @@ def admin_update_user(
         )
         db.add(new_res)
 
+    # Synchronize persistent market assignments
+    requested_markets = req.market_ids
+    if requested_markets is None and req.market_id is not None:
+        requested_markets = [req.market_id] if req.market_id.strip() else []
+
+    if requested_markets is not None:
+        if target_user.id == current_user.id and not requester_is_super:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Forbidden: Administrators cannot modify their own market assignments."
+            )
+        sync_user_market_assignments(
+            user_id=target_user.id,
+            market_ids=requested_markets,
+            primary_market=req.primary_market or req.market_id,
+            creator=current_user,
+            db=db
+        )
+
     db.commit()
     db.refresh(target_user)
 
-    return UserResponse(
-        id=target_user.id,
-        email=target_user.email,
-        full_name=target_user.full_name,
-        role=target_user.role,
-        is_active=target_user.is_active,
-        rank=get_role_rank(target_user.role, db),
-        permissions=get_user_permissions(db, target_user)
-    )
+    return _build_user_response(target_user, db)
 
 
 @router.patch("/users/{user_id}/status", response_model=UserResponse)
@@ -587,12 +677,4 @@ def toggle_user_status(
         method="PATCH"
     )
 
-    return UserResponse(
-        id=target_user.id,
-        email=target_user.email,
-        full_name=target_user.full_name,
-        role=target_user.role,
-        is_active=target_user.is_active,
-        rank=get_role_rank(target_user.role, db),
-        permissions=get_user_permissions(db, target_user)
-    )
+    return _build_user_response(target_user, db)
