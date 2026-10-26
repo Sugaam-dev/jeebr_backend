@@ -347,3 +347,33 @@ def mask_document_identifier(doc_type: str, raw_identifier: Optional[str]) -> Op
         return f"{'X' * (len(clean) - 4)}{clean[-4:]}"
     else:
         return "XXXX"
+
+
+
+# ─── Storage Diagnostic (Phase 9B Workstream J) ──────────────────────────────
+
+def get_storage_diagnostic() -> Dict[str, Any]:
+    """
+    Inspects and returns non-sensitive storage provider health and configuration.
+    Never exposes raw secrets or cloud credentials.
+    """
+    provider = get_storage_provider()
+    
+    if isinstance(provider, S3StorageProvider):
+        target = f"s3://{provider.bucket_name}"
+        mode = "OBJECT_STORAGE_S3"
+    elif isinstance(provider, LocalSandboxedStorageProvider):
+        target = os.path.basename(provider.base_dir)
+        mode = "LOCAL_SANDBOX"
+    else:
+        target = "UNCONFIGURED"
+        mode = "UNCONFIGURED_FAIL_CLOSED"
+
+    return {
+        "active_provider": provider.provider_name(),
+        "is_configured": provider.is_configured(),
+        "storage_mode": mode,
+        "storage_path_or_bucket": target,
+        "allowed_mimes": list(ALLOWED_MIME_TYPES.keys()),
+        "max_size_mb": MAX_DOCUMENT_SIZE_BYTES // (1024 * 1024)
+    }

@@ -14,7 +14,7 @@ Enforces:
 """
 
 from typing import List, Optional, Dict, Any
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status, Response, Request
 from sqlalchemy.orm import Session
 from sqlalchemy import or_
 
@@ -27,6 +27,8 @@ from app.models_finance import (
 )
 from app.schemas import (
     BillingAccountResponse, BillingAccountCreateRequest,
+    PaymentOrderCreateRequest, PaymentOrderResponse,
+    StorageDiagnosticResponse, CustomerBillingSummaryResponse,
     BillingSubscriptionResponse, BillingSubscriptionCreateRequest, SubscriptionTransitionRequest,
     InvoiceDetailResponse, InvoiceCreateRequest,
     PaymentResponse, PaymentRecordRequest,
@@ -339,6 +341,7 @@ def get_invoice_detail(
     return resp
 
 
+@router.post("/invoices/issue", response_model=InvoiceDetailResponse)
 @router.post("/invoices", response_model=InvoiceDetailResponse)
 def create_invoice(
     req: InvoiceCreateRequest,
@@ -370,16 +373,29 @@ def create_invoice(
 @router.get("/invoices/{invoice_id}/download")
 def download_invoice_document(
     invoice_id: int,
+    format: str = Query("json", description="Document format: 'pdf' or 'json'"),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
     market: str = Depends(get_current_market)
 ):
-    """Generate downloadable tax invoice document metadata and JSON printable payload."""
+    """Generate downloadable tax invoice document (valid PDF binary or JSON metadata)."""
     inv = db.query(Invoice).filter(Invoice.id == invoice_id, Invoice.market_id == market).first()
     if not inv:
         raise HTTPException(status_code=404, detail="Invoice not found.")
 
     _assert_customer_access(inv.customer_id, current_user, db)
+
+    if format.lower() == "pdf":
+        from app.services.invoice_document import generate_invoice_pdf
+        pdf_bytes = generate_invoice_pdf(inv)
+        return Response(
+            content=pdf_bytes,
+            media_type="application/pdf",
+            headers={
+                "Content-Disposition": f'inline; filename="Invoice-{inv.invoice_code}.pdf"',
+                "Content-Type": "application/pdf"
+            }
+        )
 
     cust = inv.customer
     tax_amt = float(inv.tax_amount)
@@ -755,3 +771,124 @@ def trigger_overdue_evaluation(
     """Evaluates overdue invoices, updates lifecycle status, and computes aging."""
     res = evaluate_overdue_and_dunning(db, market_id=market)
     return res
+
+
+# ─── Payment Order Initiation & Razorpay Webhooks (Phase 9B Workstream A) ─────
+
+@router.post("/payments/create-order", response_model=PaymentOrderResponse)
+@router.post("/payments/order", response_model=PaymentOrderResponse)
+def create_payment_order_endpoint(
+    req: PaymentOrderCreateRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_roles(["Customer", "Admin", "SUPER_ADMIN", "Revenue"])),
+    market: str = Depends(get_current_market)
+):
+    """
+    Authorizes an online payment order through Razorpay or simulated gateway.
+    Returns payment order parameters for customer frontend checkout.
+    """
+    norm_role = normalize_role_name(current_user.role)
+    if norm_role == "Customer":
+        cust = db.query(Customer).filter(Customer.email == current_user.email).first()
+        if not cust:
+            raise HTTPException(status_code=403, detail="Customer identity not found.")
+        target_customer_id = cust.id
+    else:
+        inv = db.query(Invoice).filter(Invoice.id == req.invoice_id).first()
+        if not inv:
+            raise HTTPException(status_code=404, detail="Invoice not found.")
+        target_customer_id = inv.customer_id
+
+    try:
+        from app.services.billing_service import initiate_payment_order
+        res = initiate_payment_order(
+            db=db,
+            invoice_id=req.invoice_id,
+            customer_id=target_customer_id,
+            amount=req.amount,
+            payment_method=req.payment_method or "UPI"
+        )
+        return res
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.post("/webhooks/razorpay")
+async def razorpay_webhook_endpoint(
+    request: Request,
+    db: Session = Depends(get_db)
+):
+    """
+    Durable, idempotent webhook receiver for Razorpay payment callbacks.
+    Verifies HMAC-SHA256 signature against exact raw request body bytes.
+    Deduplicates events and reconciles ledger state.
+    """
+    raw_body = await request.body()
+    signature = request.headers.get("X-Razorpay-Signature", "")
+    event_id = request.headers.get("X-Razorpay-Event-Id")
+
+    if not signature:
+        raise HTTPException(status_code=400, detail="Missing X-Razorpay-Signature header.")
+
+    try:
+        from app.services.billing_service import process_razorpay_webhook
+        result = process_razorpay_webhook(
+            db=db,
+            raw_body=raw_body,
+            signature=signature,
+            event_id=event_id
+        )
+        return result
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+# ─── Storage Diagnostics (Phase 9B Workstream J) ─────────────────────────────
+
+@router.get("/storage-status", response_model=StorageDiagnosticResponse)
+def get_storage_status_endpoint(
+    current_user: User = Depends(get_current_user)
+):
+    """Inspect and report non-sensitive document object storage configuration."""
+    from app.services.document_storage import get_storage_diagnostic
+    return get_storage_diagnostic()
+
+
+# ─── Customer Self-Service Billing Summary (Phase 9B Workstream E) ───────────
+
+@router.get("/my-billing", response_model=CustomerBillingSummaryResponse)
+def get_my_billing_summary(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_roles(["Customer", "Admin", "SUPER_ADMIN"])),
+    market: str = Depends(get_current_market)
+):
+    """
+    Consolidated customer self-service billing endpoint.
+    Resolves customer identity from authenticated session.
+    """
+    cust = db.query(Customer).filter(Customer.email == current_user.email).first()
+    if not cust:
+        # Fallback for admin previewing customer billing
+        cust = db.query(Customer).first()
+        if not cust:
+            raise HTTPException(status_code=404, detail="Customer record not found.")
+
+    account = db.query(BillingAccount).filter(BillingAccount.customer_id == cust.id).first()
+    subs = db.query(BillingSubscription).filter(BillingSubscription.customer_id == cust.id).all()
+    invoices = db.query(Invoice).filter(Invoice.customer_id == cust.id).order_by(Invoice.created_at.desc()).limit(20).all()
+    payments = db.query(Payment).filter(Payment.customer_id == cust.id).order_by(Payment.created_at.desc()).limit(20).all()
+
+    total_outstanding = sum(float(inv.outstanding_amount) for inv in invoices if inv.status in ("Issued", "Late", "Overdue", "Partially_Paid"))
+    balance = float(account.balance) if account else 0.0
+
+    return {
+        "customer_id": cust.id,
+        "customer_code": cust.customer_code,
+        "customer_name": cust.name,
+        "billing_account": BillingAccountResponse.model_validate(account) if account else None,
+        "active_subscriptions": [BillingSubscriptionResponse.model_validate(s) for s in subs],
+        "recent_invoices": [InvoiceDetailResponse.model_validate(i) for i in invoices],
+        "recent_payments": [PaymentResponse.model_validate(p) for p in payments],
+        "total_outstanding": total_outstanding,
+        "account_balance": balance
+    }

@@ -1,3 +1,4 @@
+from decimal import Decimal
 from datetime import datetime
 from typing import Optional, List, Any, Dict
 from pydantic import BaseModel, EmailStr, Field, model_validator
@@ -1596,3 +1597,43 @@ class GatewayStatusResponse(BaseModel):
 
 
 
+
+class PaymentOrderCreateRequest(BaseModel):
+    invoice_id: int
+    amount: Optional[Decimal] = None
+    payment_method: Optional[str] = "UPI"
+
+
+class PaymentOrderResponse(BaseModel):
+    payment_id: str
+    payment_reference: str
+    order_id: str
+    gateway_order_id: str
+    amount: float
+    currency: str
+    invoice_id: int
+    invoice_code: str
+    key_id: str
+    is_simulated: bool
+    status: str
+
+
+class StorageDiagnosticResponse(BaseModel):
+    active_provider: str
+    is_configured: bool
+    storage_mode: str
+    storage_path_or_bucket: str
+    allowed_mimes: List[str]
+    max_size_mb: int
+
+
+class CustomerBillingSummaryResponse(BaseModel):
+    customer_id: int
+    customer_code: str
+    customer_name: str
+    billing_account: Optional[BillingAccountResponse] = None
+    active_subscriptions: List[BillingSubscriptionResponse] = []
+    recent_invoices: List[InvoiceDetailResponse] = []
+    recent_payments: List[PaymentResponse] = []
+    total_outstanding: float = 0.0
+    account_balance: float = 0.0

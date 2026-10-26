@@ -8,7 +8,6 @@ from sqlalchemy import (
 from sqlalchemy.orm import relationship
 from sqlalchemy.types import TypeDecorator, CHAR
 from app.database import Base
-import app.models  # noqa: F401 - ensure Customer, User, etc. are registered in SQLAlchemy mapper registry
 
 # ─── Platform-Independent GUID Type ──────────────────────────────────────────
 

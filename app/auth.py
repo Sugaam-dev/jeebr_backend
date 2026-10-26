@@ -100,31 +100,16 @@ def get_current_user(
 
 SUPPORTED_ROLES = ["SUPER_ADMIN", "Super Admin", "Executive", "NOC", "Care", "Revenue", "Admin", "Viewer", "Field Engineer", "Customer"]
 
-# In-memory rate limiting tracker for login attempts (composite key: IP + email)
-_FAILED_ATTEMPTS: dict[str, list[datetime]] = {}
-_MAX_FAILED_ATTEMPTS = 5
-_LOCKOUT_MINUTES = 5
+from app.services.rate_limiter import login_rate_limiter
 
 def check_login_rate_limit(key: str) -> None:
-    now = datetime.now(timezone.utc)
-    attempts = _FAILED_ATTEMPTS.get(key, [])
-    # Filter attempts within lockout window
-    recent = [t for t in attempts if (now - t).total_seconds() < _LOCKOUT_MINUTES * 60]
-    _FAILED_ATTEMPTS[key] = recent
-    if len(recent) >= _MAX_FAILED_ATTEMPTS:
-        raise HTTPException(
-            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-            detail=f"Too many failed login attempts. Please try again after {_LOCKOUT_MINUTES} minutes."
-        )
+    login_rate_limiter.check_rate_limit(key)
 
 def record_failed_login(key: str) -> None:
-    now = datetime.now(timezone.utc)
-    attempts = _FAILED_ATTEMPTS.get(key, [])
-    attempts.append(now)
-    _FAILED_ATTEMPTS[key] = attempts
+    login_rate_limiter.record_failure(key)
 
 def clear_failed_logins(key: str) -> None:
-    _FAILED_ATTEMPTS.pop(key, None)
+    login_rate_limiter.clear(key)
 
 def log_security_event(
     db: Optional[Session] = None,

@@ -30,6 +30,7 @@ from app.models_finance import (
 from app.services.provisioning_catalog import get_service_plan_by_id, CANONICAL_SERVICE_PLANS
 from app.services.payment_provider import get_payment_provider, PaymentChargeResult
 from app.services.ledger_service import post_journal_entry, quantize_money
+from app.services.tax_service import compute_gst, get_supplier_tax_profile
 
 
 # ─── Helper Functions ─────────────────────────────────────────────────────────
@@ -182,7 +183,14 @@ def transition_subscription_status(
     reason: Optional[str] = None
 ) -> BillingSubscription:
     """Transition subscription lifecycle status (ACTIVE, SUSPENDED, CANCELLED)."""
-    sub = db.query(BillingSubscription).filter(BillingSubscription.id == subscription_id).first()
+    sub = None
+    try:
+        uuid_obj = uuid.UUID(str(subscription_id))
+        sub = db.query(BillingSubscription).filter(BillingSubscription.id == uuid_obj).first()
+    except (ValueError, AttributeError):
+        pass
+    if not sub:
+        sub = db.query(BillingSubscription).filter(BillingSubscription.subscription_code == str(subscription_id)).first()
     if not sub:
         raise ValueError(f"Subscription '{subscription_id}' not found.")
 
@@ -225,7 +233,14 @@ def generate_invoice(
     Prevents duplicate billing for the same subscription and billing period.
     Posts a balanced double-entry General Ledger entry.
     """
-    sub = db.query(BillingSubscription).filter(BillingSubscription.id == subscription_id).first()
+    sub = None
+    try:
+        uuid_obj = uuid.UUID(str(subscription_id))
+        sub = db.query(BillingSubscription).filter(BillingSubscription.id == uuid_obj).first()
+    except (ValueError, AttributeError):
+        pass
+    if not sub:
+        sub = db.query(BillingSubscription).filter(BillingSubscription.subscription_code == str(subscription_id)).first()
     if not sub:
         raise ValueError(f"Subscription '{subscription_id}' not found.")
 
@@ -257,11 +272,17 @@ def generate_invoice(
     subtotal = (unit_price * qty).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
 
     discount = min(_format_money(discount_amount), subtotal)
-    taxable_amount = subtotal - discount
-
-    tax_rate_dec = Decimal(str(tax_rate))
-    tax_amount = (taxable_amount * tax_rate_dec / Decimal('100.00')).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
-    total_amount = taxable_amount + tax_amount
+    tax_calc = compute_gst(
+        subtotal=subtotal,
+        discount_amount=discount,
+        market_id=sub.market_id,
+        customer_state=getattr(customer, 'state', None) or sub.market_id,
+        currency=sub.currency
+    )
+    taxable_amount = tax_calc.taxable_amount
+    tax_amount = tax_calc.total_tax
+    total_amount = tax_calc.total_amount
+    tax_rate_dec = tax_calc.cgst_rate + tax_calc.sgst_rate if tax_calc.tax_treatment == 'INTRA_STATE' else tax_calc.igst_rate
 
     # Generate sequential unique invoice code e.g. INV-MUM-2026-00001
     count = db.query(Invoice).count()
@@ -289,6 +310,13 @@ def generate_invoice(
         total_amount=total_amount,
         paid_amount=Decimal('0.00'),
         outstanding_amount=total_amount,
+        tax_treatment=tax_calc.tax_treatment,
+        cgst_amount=tax_calc.cgst_amount,
+        sgst_amount=tax_calc.sgst_amount,
+        igst_amount=tax_calc.igst_amount,
+        place_of_supply=tax_calc.place_of_supply,
+        supplier_gstin=tax_calc.supplier_gstin,
+        customer_gstin=tax_calc.customer_gstin,
         billing_period_start=period_start,
         billing_period_end=period_end,
         idempotency_key=idempotency_key or f"inv_gen_{sub.id}_{int(period_start.timestamp())}",
@@ -844,4 +872,292 @@ def get_finance_overview(db: Session, market_id: Optional[str] = None) -> Dict[s
         "recent_payments": recent_pays,
         "recent_invoices": recent_invs,
         "gateway_status": get_payment_gateway_status()
+    }
+
+
+# ─── Razorpay Order Initiation & Webhook Settlement (Phase 9B Workstream A) ───
+
+def initiate_payment_order(
+    db: Session,
+    invoice_id: int,
+    customer_id: int,
+    amount: Optional[Decimal] = None,
+    payment_method: str = "UPI"
+) -> Dict[str, Any]:
+    """
+    Creates an authorized gateway order (Razorpay or simulated) for an invoice.
+    Records a PENDING payment record with gateway_order_id.
+    """
+    inv = db.query(Invoice).filter(Invoice.id == invoice_id).first()
+    if not inv:
+        raise ValueError(f"Invoice #{invoice_id} not found.")
+
+    if inv.customer_id != customer_id:
+        raise ValueError("Invoice does not belong to the authenticated customer.")
+
+    if inv.status == InvoiceStatus.PAID:
+        raise ValueError("Invoice is already fully paid.")
+
+    pay_amount = _format_money(amount) if amount is not None else _format_money(inv.outstanding_amount)
+    if pay_amount <= Decimal("0.00"):
+        raise ValueError("Payment amount must be greater than zero.")
+    if pay_amount > _format_money(inv.outstanding_amount):
+        raise ValueError(f"Payment amount ({pay_amount}) cannot exceed outstanding amount ({inv.outstanding_amount}).")
+
+    account = inv.billing_account
+    if not account:
+        account = ensure_billing_account(db, customer_id=inv.customer_id, market_id=inv.market_id)
+
+    # Generate sequential unique payment reference
+    count = db.query(Payment).count()
+    mkt = inv.market_id[:3].upper()
+    pay_ref = f"PAY-{mkt}-{datetime.utcnow().year}-{count + 1:05d}"
+    idemp = f"pay_order_{uuid.uuid4().hex[:16]}"
+
+    provider = get_payment_provider()
+    order_res = provider.create_payment_order(
+        amount=pay_amount,
+        currency=inv.currency,
+        receipt=pay_ref,
+        notes={"invoice_id": str(inv.id), "customer_id": str(customer_id), "invoice_code": inv.invoice_code}
+    )
+
+    pending_payment = Payment(
+        payment_reference=pay_ref,
+        billing_account_id=account.id,
+        customer_id=inv.customer_id,
+        market_id=inv.market_id,
+        amount=pay_amount,
+        currency=inv.currency,
+        payment_method=payment_method,
+        provider_name=provider.get_provider_name(),
+        gateway_order_id=order_res["order_id"],
+        provider_transaction_id=None,
+        idempotency_key=idemp,
+        status=PaymentStatus.PENDING,
+        allocated_amount=Decimal("0.00"),
+        unallocated_amount=pay_amount,
+        is_simulated=order_res.get("is_simulated", True),
+        payment_date=datetime.utcnow()
+    )
+    db.add(pending_payment)
+    db.commit()
+    db.refresh(pending_payment)
+
+    return {
+        "payment_id": str(pending_payment.id),
+        "payment_reference": pay_ref,
+        "order_id": order_res["order_id"],
+        "gateway_order_id": order_res["order_id"],
+        "amount": float(pay_amount),
+        "currency": inv.currency,
+        "invoice_id": inv.id,
+        "invoice_code": inv.invoice_code,
+        "key_id": order_res.get("key_id", ""),
+        "is_simulated": order_res.get("is_simulated", True),
+        "status": "PENDING"
+    }
+
+
+def process_razorpay_webhook(
+    db: Session,
+    raw_body: bytes,
+    signature: str,
+    event_id: Optional[str] = None
+) -> Dict[str, Any]:
+    """
+    Idempotent, secure webhook processor for Razorpay events.
+    Verifies HMAC-SHA256 signature, deduplicates event IDs,
+    reconciles payments, allocates to invoices, and posts balanced ledger entries.
+    """
+    import json
+    import os
+    from app.services.payment_provider import RazorpayGatewayAdapter
+    from app.models_finance import PaymentWebhookEvent, NotificationOutbox
+
+    adapter = RazorpayGatewayAdapter()
+    
+    webhook_secret = os.getenv("RAZORPAY_WEBHOOK_SECRET") or os.getenv("RAZORPAY_KEY_SECRET", "")
+    is_valid = adapter.verify_webhook_signature(raw_body, signature, secret=webhook_secret)
+    if not is_valid:
+        raise ValueError("Invalid Razorpay webhook signature. Request rejected.")
+
+    try:
+        data = json.loads(raw_body.decode("utf-8"))
+    except Exception as e:
+        raise ValueError(f"Malformed webhook JSON payload: {e}")
+
+    evt_id = event_id or data.get("id") or str(uuid.uuid4())
+    event_type = data.get("event", "unknown")
+
+    # Deduplication check
+    existing_evt = db.query(PaymentWebhookEvent).filter(PaymentWebhookEvent.event_id == evt_id).first()
+    if existing_evt:
+        return {
+            "status": "already_processed",
+            "event_id": evt_id,
+            "event_type": event_type,
+            "message": "Webhook event was previously processed idempotently."
+        }
+
+    # Record webhook event
+    webhook_rec = PaymentWebhookEvent(
+        event_id=evt_id,
+        provider="razorpay",
+        event_type=event_type,
+        payload=data,
+        status="PROCESSED",
+        received_at=datetime.utcnow(),
+        processed_at=datetime.utcnow()
+    )
+    db.add(webhook_rec)
+
+    if event_type in ("payment.captured", "order.paid"):
+        payment_entity = data.get("payload", {}).get("payment", {}).get("entity", {})
+        rzp_payment_id = payment_entity.get("id")
+        rzp_order_id = payment_entity.get("order_id")
+        amount_subunits = payment_entity.get("amount", 0)
+        currency = payment_entity.get("currency", "INR")
+        captured_amount = Decimal(str(amount_subunits)) / Decimal("100.00")
+
+        # Find internal payment by gateway_order_id or provider_transaction_id
+        payment = None
+        if rzp_order_id:
+            payment = db.query(Payment).filter(Payment.gateway_order_id == rzp_order_id).populate_existing().with_for_update().first()
+        if not payment and rzp_payment_id:
+            payment = db.query(Payment).filter(Payment.provider_transaction_id == rzp_payment_id).populate_existing().with_for_update().first()
+
+        if payment:
+            webhook_rec.payment_id = payment.id
+            webhook_rec.order_id = rzp_order_id
+            
+            # If already settled/allocated, return idempotently
+            if payment.status in (PaymentStatus.COMPLETED, PaymentStatus.ALLOCATED, PaymentStatus.PARTIALLY_ALLOCATED):
+                db.commit()
+                return {"status": "success", "event_id": evt_id, "message": "Payment already settled."}
+
+            # Verify amount
+            if _format_money(payment.amount) != _format_money(captured_amount):
+                logger.error(f"[WEBHOOK] Amount mismatch: expected {payment.amount}, got {captured_amount}")
+                webhook_rec.status = "AMOUNT_MISMATCH"
+                db.commit()
+                raise ValueError("Payment amount mismatch with internal order.")
+
+            payment.status = PaymentStatus.COMPLETED
+            payment.provider_transaction_id = rzp_payment_id
+            payment.is_simulated = False
+            payment.failure_reason = None
+
+            # Allocate against pending invoice if noted in order
+            notes = payment_entity.get("notes", {})
+            inv_id = notes.get("invoice_id")
+            if inv_id and str(inv_id).isdigit():
+                invoice = db.query(Invoice).filter(Invoice.id == int(inv_id)).populate_existing().with_for_update().first()
+                if invoice and invoice.outstanding_amount > Decimal("0.00"):
+                    alloc_amt = min(captured_amount, _format_money(invoice.outstanding_amount))
+                    alloc = PaymentAllocation(
+                        payment_id=payment.id,
+                        invoice_id=invoice.id,
+                        allocated_amount=alloc_amt,
+                        currency=currency,
+                        allocated_at=datetime.utcnow()
+                    )
+                    db.add(alloc)
+                    invoice.paid_amount = _format_money(invoice.paid_amount) + alloc_amt
+                    invoice.outstanding_amount = _format_money(invoice.outstanding_amount) - alloc_amt
+                    if invoice.outstanding_amount <= Decimal("0.00"):
+                        invoice.status = InvoiceStatus.PAID
+                        invoice.paid_date = datetime.utcnow()
+                    else:
+                        invoice.status = InvoiceStatus.PARTIALLY_PAID
+
+                    payment.allocated_amount = alloc_amt
+                    payment.unallocated_amount = captured_amount - alloc_amt
+                    payment.status = PaymentStatus.ALLOCATED if payment.unallocated_amount == Decimal("0.00") else PaymentStatus.PARTIALLY_ALLOCATED
+
+            # Post double-entry General Ledger Journal Entry
+            ledger_lines = [
+                {
+                    "account_code": ChartOfAccounts.CASH_CLEARING,
+                    "debit": captured_amount,
+                    "credit": Decimal("0.00"),
+                    "currency": currency
+                },
+                {
+                    "account_code": ChartOfAccounts.ACCOUNTS_RECEIVABLE,
+                    "debit": Decimal("0.00"),
+                    "credit": payment.allocated_amount if payment.allocated_amount > Decimal("0.00") else captured_amount,
+                    "currency": currency
+                }
+            ]
+            if payment.unallocated_amount > Decimal("0.00"):
+                ledger_lines.append({
+                    "account_code": ChartOfAccounts.CUSTOMER_DEPOSITS,
+                    "debit": Decimal("0.00"),
+                    "credit": payment.unallocated_amount,
+                    "currency": currency
+                })
+
+            post_journal_entry(
+                db=db,
+                market_id=payment.market_id,
+                reference_type="PAYMENT_WEBHOOK",
+                reference_id=payment.payment_reference,
+                description=f"Settled Razorpay Payment {rzp_payment_id} for Order {rzp_order_id}",
+                lines=ledger_lines
+            )
+
+            # Enqueue payment confirmation notification
+            recipient_phone = payment.customer.phone if payment.customer and payment.customer.phone else "9800000000"
+            notif = NotificationOutbox(
+                market_id=payment.market_id,
+                customer_id=payment.customer_id,
+                recipient=recipient_phone,
+                channel="SMS",
+                event_type="PAYMENT_CONFIRMATION",
+                message=f"Dear Subscriber, payment of INR {captured_amount:.2f} received successfully. Ref: {payment.payment_reference}.",
+                idempotency_key=f"notif_pay_{payment.payment_reference}",
+                is_simulated=False,
+                status="QUEUED"
+            )
+            db.add(notif)
+
+    elif event_type == "payment.failed":
+        payment_entity = data.get("payload", {}).get("payment", {}).get("entity", {})
+        rzp_order_id = payment_entity.get("order_id")
+        error_desc = payment_entity.get("error_description", "Payment declined by provider")
+        if rzp_order_id:
+            payment = db.query(Payment).filter(Payment.gateway_order_id == rzp_order_id).first()
+            if payment and payment.status == PaymentStatus.PENDING:
+                payment.status = PaymentStatus.FAILED
+                payment.failure_reason = error_desc
+
+    elif event_type == "refund.processed":
+        refund_entity = data.get("payload", {}).get("refund", {}).get("entity", {})
+        rzp_payment_id = refund_entity.get("payment_id")
+        refund_amt = Decimal(str(refund_entity.get("amount", 0))) / Decimal("100.00")
+        if rzp_payment_id:
+            payment = db.query(Payment).filter(Payment.provider_transaction_id == rzp_payment_id).first()
+            if payment:
+                existing_rf = db.query(RefundRecord).filter(RefundRecord.provider_refund_id == refund_entity.get("id")).first()
+                if not existing_rf:
+                    rf_record = RefundRecord(
+                        refund_code=f"REF-{payment.market_id[:3].upper()}-{datetime.utcnow().year}-{uuid.uuid4().hex[:6].upper()}",
+                        payment_id=payment.id,
+                        billing_account_id=payment.billing_account_id,
+                        market_id=payment.market_id,
+                        amount=refund_amt,
+                        currency=payment.currency,
+                        reason=refund_entity.get("notes", {}).get("reason", "Gateway webhook refund"),
+                        status="COMPLETED",
+                        provider_refund_id=refund_entity.get("id")
+                    )
+                    db.add(rf_record)
+
+    db.commit()
+    return {
+        "status": "success",
+        "event_id": evt_id,
+        "event_type": event_type,
+        "message": f"Webhook {event_type} accepted and reconciled."
     }

@@ -5,17 +5,24 @@ SentinelOS Payment Provider Abstraction Layer.
 Supports:
 1. Deterministic Simulated Provider for local development, CI, and test execution.
 2. Transparent labeling: is_simulated=True is always recorded on simulated transactions.
-3. Razorpay / Real Gateway Adapter interface that fails closed when credentials are not configured.
-4. Duplicate callback and idempotency protection.
-5. PCI-DSS compliance: NEVER stores card numbers, CVVs, or sensitive credentials.
+3. Razorpay Gateway Adapter with HMAC-SHA256 signature verification and order creation.
+4. Fails closed when live production credentials are absent or invalid.
+5. Duplicate callback and idempotency protection.
+6. PCI-DSS compliance: NEVER stores card numbers, CVVs, or sensitive credentials.
 """
 
+import hashlib
+import hmac
+import json
+import logging
 import os
 import uuid
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from decimal import Decimal
 from typing import Optional, Dict, Any
+
+logger = logging.getLogger("sentinel.payment_provider")
 
 
 class PaymentGatewayError(Exception):
@@ -59,6 +66,17 @@ class BasePaymentProvider(ABC):
     """Abstract Payment Gateway Contract for SentinelOS ISP Billing."""
 
     @abstractmethod
+    def create_payment_order(
+        self,
+        amount: Decimal,
+        currency: str,
+        receipt: str,
+        notes: Optional[Dict[str, str]] = None
+    ) -> Dict[str, Any]:
+        """Create an authorized payment order with provider."""
+        pass
+
+    @abstractmethod
     def charge(
         self,
         amount: Decimal,
@@ -68,7 +86,7 @@ class BasePaymentProvider(ABC):
         customer_email: Optional[str] = None,
         notes: Optional[Dict[str, str]] = None
     ) -> PaymentChargeResult:
-        """Process an authorized charge."""
+        """Process a charge."""
         pass
 
     @abstractmethod
@@ -102,6 +120,27 @@ class SimulatedPaymentProvider(BasePaymentProvider):
     def __init__(self, should_fail: bool = False, failure_reason: Optional[str] = None):
         self.should_fail = should_fail
         self.failure_reason = failure_reason or "Simulated payment declined by bank."
+
+    def create_payment_order(
+        self,
+        amount: Decimal,
+        currency: str,
+        receipt: str,
+        notes: Optional[Dict[str, str]] = None
+    ) -> Dict[str, Any]:
+        order_id = f"order_sim_{uuid.uuid4().hex[:14]}"
+        return {
+            "order_id": order_id,
+            "provider_order_id": order_id,
+            "amount": amount,
+            "amount_subunits": int(amount * Decimal("100.00")),
+            "currency": currency,
+            "receipt": receipt,
+            "key_id": "rzp_test_simulated_key",
+            "is_simulated": True,
+            "status": "created",
+            "notes": notes or {}
+        }
 
     def charge(
         self,
@@ -178,12 +217,75 @@ class RazorpayGatewayAdapter(BasePaymentProvider):
     def __init__(self):
         self.key_id = os.getenv("RAZORPAY_KEY_ID", "").strip()
         self.key_secret = os.getenv("RAZORPAY_KEY_SECRET", "").strip()
+        self.webhook_secret = os.getenv("RAZORPAY_WEBHOOK_SECRET", "").strip() or self.key_secret
+        self.timeout = float(os.getenv("RAZORPAY_TIMEOUT_SECONDS", "10.0"))
 
     def is_live_configured(self) -> bool:
         return bool(self.key_id and self.key_secret)
 
     def is_available(self) -> bool:
         return self.is_live_configured()
+
+    def create_payment_order(
+        self,
+        amount: Decimal,
+        currency: str,
+        receipt: str,
+        notes: Optional[Dict[str, str]] = None
+    ) -> Dict[str, Any]:
+        if not self.is_live_configured():
+            raise PaymentGatewayNotConfiguredError(
+                "Live Razorpay credentials not configured. Fail-closed: Cannot create payment order."
+            )
+        try:
+            import razorpay
+            client = razorpay.Client(auth=(self.key_id, self.key_secret))
+            amount_subunits = int(amount * Decimal("100.00"))
+            order_payload = {
+                "amount": amount_subunits,
+                "currency": currency.upper(),
+                "receipt": receipt[:40],
+                "payment_capture": 1,
+                "notes": notes or {}
+            }
+            order = client.order.create(data=order_payload)
+            return {
+                "order_id": order["id"],
+                "provider_order_id": order["id"],
+                "amount": amount,
+                "amount_subunits": amount_subunits,
+                "currency": currency,
+                "receipt": receipt,
+                "key_id": self.key_id,
+                "is_simulated": False,
+                "status": order.get("status", "created"),
+                "notes": notes or {}
+            }
+        except Exception as e:
+            logger.error(f"[RAZORPAY] Order creation failed: {e}")
+            raise PaymentGatewayError(f"Razorpay order creation failed: {e}")
+
+    def verify_webhook_signature(self, raw_body: bytes, signature: str, secret: Optional[str] = None) -> bool:
+        """
+        Verify Razorpay webhook HMAC-SHA256 signature against exact raw bytes.
+        Follows official Razorpay signature verification contract.
+        """
+        sec = secret or self.webhook_secret
+        if not sec or not signature:
+            return False
+        expected = hmac.new(sec.encode("utf-8"), raw_body, hashlib.sha256).hexdigest()
+        return hmac.compare_digest(expected, signature)
+
+    def fetch_payment_status(self, provider_payment_id: str) -> Dict[str, Any]:
+        if not self.is_live_configured():
+            raise PaymentGatewayNotConfiguredError("Live Razorpay credentials not configured.")
+        try:
+            import razorpay
+            client = razorpay.Client(auth=(self.key_id, self.key_secret))
+            return client.payment.fetch(provider_payment_id)
+        except Exception as e:
+            logger.error(f"[RAZORPAY] Payment status fetch failed: {e}")
+            raise PaymentGatewayError(f"Razorpay fetch payment status failed: {e}")
 
     def charge(
         self,
@@ -199,8 +301,17 @@ class RazorpayGatewayAdapter(BasePaymentProvider):
                 "Live Razorpay payment gateway credentials not configured. "
                 "System is operating in fail-closed mode. Real payments are blocked."
             )
-        # Real production API invocation would occur here with verified razorpay client
-        raise NotImplementedError("Real production payment processing requires verified gateway authorization.")
+        order = self.create_payment_order(amount, currency, idempotency_key, notes)
+        return PaymentChargeResult(
+            success=True,
+            status="PENDING",
+            provider_transaction_id=order["order_id"],
+            provider_name="RAZORPAY_GATEWAY",
+            amount=amount,
+            currency=currency,
+            is_simulated=False,
+            gateway_metadata=order
+        )
 
     def refund(
         self,
@@ -210,10 +321,31 @@ class RazorpayGatewayAdapter(BasePaymentProvider):
         reason: str
     ) -> PaymentRefundResult:
         if not self.is_live_configured():
-            raise PaymentGatewayNotConfiguredError(
-                "Live Razorpay credentials not configured for refund."
+            raise PaymentGatewayNotConfiguredError("Live Razorpay credentials not configured for refund.")
+        try:
+            import razorpay
+            client = razorpay.Client(auth=(self.key_id, self.key_secret))
+            amount_subunits = int(amount * Decimal("100.00"))
+            res = client.payment.refund(provider_transaction_id, {"amount": amount_subunits, "notes": {"reason": reason}})
+            return PaymentRefundResult(
+                success=True,
+                status="COMPLETED",
+                provider_refund_id=res.get("id", f"rf_{provider_transaction_id}"),
+                amount=amount,
+                currency=currency,
+                is_simulated=False
             )
-        raise NotImplementedError("Real production payment refund requires verified gateway authorization.")
+        except Exception as e:
+            logger.error(f"[RAZORPAY] Refund failed: {e}")
+            return PaymentRefundResult(
+                success=False,
+                status="FAILED",
+                provider_refund_id="",
+                amount=amount,
+                currency=currency,
+                is_simulated=False,
+                failure_reason=str(e)
+            )
 
     def get_provider_name(self) -> str:
         return "RAZORPAY_GATEWAY"
@@ -221,7 +353,7 @@ class RazorpayGatewayAdapter(BasePaymentProvider):
 
 def get_payment_provider(force_provider: Optional[str] = None) -> BasePaymentProvider:
     """
-    Factory to return the active payment provider.
+    Factory to return active payment provider.
     Defaults to SimulatedPaymentProvider if live credentials are not present.
     """
     env_provider = (force_provider or os.getenv("PAYMENT_GATEWAY_PROVIDER", "simulated")).lower().strip()
@@ -230,7 +362,6 @@ def get_payment_provider(force_provider: Optional[str] = None) -> BasePaymentPro
         adapter = RazorpayGatewayAdapter()
         if adapter.is_live_configured():
             return adapter
-        # Fall back to simulated with clear warning or raise if strictly configured
         return SimulatedPaymentProvider()
 
     return SimulatedPaymentProvider()

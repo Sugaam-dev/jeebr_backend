@@ -127,7 +127,7 @@ class BillingAccount(Base):
 
     id = Column(GUID(), primary_key=True, default=uuid.uuid4)
     account_number = Column(String(50), unique=True, index=True, nullable=False)  # e.g. BA-MUM-2026-0001
-    customer_id = Column(Integer, ForeignKey('customers.id', ondelete='CASCADE'), index=True, nullable=True)
+    customer_id = Column(Integer, ForeignKey('customers.id', ondelete='RESTRICT'), index=True, nullable=True)
     crm_customer_id = Column(GUID(), ForeignKey('crm_customers.id', ondelete='SET NULL'), index=True, nullable=True)
     market_id = Column(String(50), default='mumbai', index=True, nullable=False)
 
@@ -168,8 +168,8 @@ class BillingSubscription(Base):
 
     id = Column(GUID(), primary_key=True, default=uuid.uuid4)
     subscription_code = Column(String(50), unique=True, index=True, nullable=False)  # e.g. SUB-MUM-2026-0001
-    billing_account_id = Column(GUID(), ForeignKey('billing_accounts.id', ondelete='CASCADE'), index=True, nullable=False)
-    customer_id = Column(Integer, ForeignKey('customers.id', ondelete='CASCADE'), index=True, nullable=False)
+    billing_account_id = Column(GUID(), ForeignKey('billing_accounts.id', ondelete='RESTRICT'), index=True, nullable=False)
+    customer_id = Column(Integer, ForeignKey('customers.id', ondelete='RESTRICT'), index=True, nullable=False)
     crm_customer_id = Column(GUID(), ForeignKey('crm_customers.id', ondelete='SET NULL'), index=True, nullable=True)
     market_id = Column(String(50), default='mumbai', index=True, nullable=False)
 
@@ -221,7 +221,7 @@ class InvoiceLineItem(Base):
     __tablename__ = 'invoice_line_items'
 
     id = Column(GUID(), primary_key=True, default=uuid.uuid4)
-    invoice_id = Column(Integer, ForeignKey('invoices.id', ondelete='CASCADE'), index=True, nullable=False)
+    invoice_id = Column(Integer, ForeignKey('invoices.id', ondelete='RESTRICT'), index=True, nullable=False)
     subscription_id = Column(GUID(), ForeignKey('billing_subscriptions.id', ondelete='SET NULL'), index=True, nullable=True)
 
     description = Column(String(255), nullable=False)
@@ -252,8 +252,8 @@ class Payment(Base):
 
     id = Column(GUID(), primary_key=True, default=uuid.uuid4)
     payment_reference = Column(String(50), unique=True, index=True, nullable=False)  # e.g. PAY-MUM-2026-0001
-    billing_account_id = Column(GUID(), ForeignKey('billing_accounts.id', ondelete='CASCADE'), index=True, nullable=False)
-    customer_id = Column(Integer, ForeignKey('customers.id', ondelete='CASCADE'), index=True, nullable=False)
+    billing_account_id = Column(GUID(), ForeignKey('billing_accounts.id', ondelete='RESTRICT'), index=True, nullable=False)
+    customer_id = Column(Integer, ForeignKey('customers.id', ondelete='RESTRICT'), index=True, nullable=False)
     market_id = Column(String(50), default='mumbai', index=True, nullable=False)
 
     amount = Column(Numeric(12, 2), nullable=False)
@@ -263,6 +263,7 @@ class Payment(Base):
     # Provider & Gateway Tracking
     provider_name = Column(String(100), default='SIMULATED_GATEWAY', nullable=False)
     provider_transaction_id = Column(String(100), unique=True, index=True, nullable=True)
+    gateway_order_id = Column(String(100), unique=True, index=True, nullable=True)
     idempotency_key = Column(String(100), unique=True, index=True, nullable=False)
     status = Column(String(32), default=PaymentStatus.PENDING, index=True, nullable=False)
 
@@ -298,8 +299,8 @@ class PaymentAllocation(Base):
     __tablename__ = 'payment_allocations'
 
     id = Column(GUID(), primary_key=True, default=uuid.uuid4)
-    payment_id = Column(GUID(), ForeignKey('payments.id', ondelete='CASCADE'), index=True, nullable=False)
-    invoice_id = Column(Integer, ForeignKey('invoices.id', ondelete='CASCADE'), index=True, nullable=False)
+    payment_id = Column(GUID(), ForeignKey('payments.id', ondelete='RESTRICT'), index=True, nullable=False)
+    invoice_id = Column(Integer, ForeignKey('invoices.id', ondelete='RESTRICT'), index=True, nullable=False)
 
     allocated_amount = Column(Numeric(12, 2), nullable=False)
     currency = Column(String(3), default='INR', nullable=False)
@@ -320,7 +321,7 @@ class CreditNote(Base):
 
     id = Column(GUID(), primary_key=True, default=uuid.uuid4)
     credit_note_code = Column(String(50), unique=True, index=True, nullable=False)  # e.g. CN-MUM-2026-0001
-    billing_account_id = Column(GUID(), ForeignKey('billing_accounts.id', ondelete='CASCADE'), index=True, nullable=False)
+    billing_account_id = Column(GUID(), ForeignKey('billing_accounts.id', ondelete='RESTRICT'), index=True, nullable=False)
     invoice_id = Column(Integer, ForeignKey('invoices.id', ondelete='SET NULL'), index=True, nullable=True)
     market_id = Column(String(50), default='mumbai', index=True, nullable=False)
 
@@ -348,8 +349,8 @@ class RefundRecord(Base):
 
     id = Column(GUID(), primary_key=True, default=uuid.uuid4)
     refund_code = Column(String(50), unique=True, index=True, nullable=False)  # e.g. REF-MUM-2026-0001
-    payment_id = Column(GUID(), ForeignKey('payments.id', ondelete='CASCADE'), index=True, nullable=False)
-    billing_account_id = Column(GUID(), ForeignKey('billing_accounts.id', ondelete='CASCADE'), index=True, nullable=False)
+    payment_id = Column(GUID(), ForeignKey('payments.id', ondelete='RESTRICT'), index=True, nullable=False)
+    billing_account_id = Column(GUID(), ForeignKey('billing_accounts.id', ondelete='RESTRICT'), index=True, nullable=False)
     market_id = Column(String(50), default='mumbai', index=True, nullable=False)
 
     amount = Column(Numeric(12, 2), nullable=False)
@@ -433,7 +434,7 @@ class VoucherRedemption(Base):
     id = Column(GUID(), primary_key=True, default=uuid.uuid4)
     voucher_code = Column(String(64), index=True, nullable=False)
     voucher_type = Column(String(50), nullable=False)  # SPEED_BOOST, DATA_TOPUP, BILL_DISCOUNT, OTT_PASS
-    customer_id = Column(Integer, ForeignKey('customers.id', ondelete='CASCADE'), index=True, nullable=False)
+    customer_id = Column(Integer, ForeignKey('customers.id', ondelete='RESTRICT'), index=True, nullable=False)
     crm_customer_id = Column(GUID(), ForeignKey('crm_customers.id', ondelete='SET NULL'), index=True, nullable=True)
     market_id = Column(String(50), default='mumbai', index=True, nullable=False)
 
@@ -463,4 +464,93 @@ class VoucherRedemption(Base):
         CheckConstraint(f"voucher_type IN {VoucherType.ALL}", name="ck_voucher_redemption_type"),
         CheckConstraint(f"status IN {VoucherRedemptionStatus.ALL}", name="ck_voucher_redemption_status"),
         Index("ix_voucher_redemptions_cust_code", "customer_id", "voucher_code"),
+    )
+
+
+# ─── 10. Gateway Webhook Deduplication ────────────────────────────────────────
+
+class PaymentWebhookEvent(Base):
+    """
+    Durable deduplication and audit journal for incoming gateway callbacks/webhooks.
+    Enforces unique event identity to guarantee idempotency under retries and network replays.
+    """
+    __tablename__ = 'payment_webhook_events'
+
+    id = Column(GUID(), primary_key=True, default=uuid.uuid4)
+    event_id = Column(String(100), unique=True, index=True, nullable=False)  # e.g. evt_xxxx from Razorpay
+    provider = Column(String(50), default='razorpay', nullable=False)
+    event_type = Column(String(100), nullable=False)  # payment.captured, payment.failed, refund.processed
+    payment_id = Column(GUID(), ForeignKey('payments.id', ondelete='SET NULL'), nullable=True)
+    order_id = Column(String(100), index=True, nullable=True)
+    payload = Column(JSON, nullable=False)
+    status = Column(String(32), default='PROCESSED', nullable=False)  # PROCESSED, IGNORED, FAILED
+    received_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    processed_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+    __table_args__ = (
+        Index("ix_webhook_events_provider_type", "provider", "event_type"),
+    )
+
+
+# ─── 11. Automated Billing & Dunning Job Execution Records ────────────────────
+
+class BillingJobRun(Base):
+    """
+    Durable execution history for scheduled recurring billing and dunning cycles.
+    Provides operational visibility, attempt tracking, and restart recovery.
+    """
+    __tablename__ = 'billing_job_runs'
+
+    id = Column(GUID(), primary_key=True, default=uuid.uuid4)
+    job_type = Column(String(50), index=True, nullable=False)  # RECURRING_BILLING, OVERDUE_DUNNING
+    market_id = Column(String(50), nullable=True, index=True)
+    status = Column(String(32), default='RUNNING', index=True, nullable=False)  # RUNNING, COMPLETED, FAILED, RETRIED
+    attempt_count = Column(Integer, default=1, nullable=False)
+    start_time = Column(DateTime, default=datetime.utcnow, nullable=False)
+    finish_time = Column(DateTime, nullable=True)
+
+    records_processed = Column(Integer, default=0, nullable=False)
+    records_succeeded = Column(Integer, default=0, nullable=False)
+    records_failed = Column(Integer, default=0, nullable=False)
+    records_skipped = Column(Integer, default=0, nullable=False)
+
+    error_details = Column(Text, nullable=True)
+    summary_metadata = Column(JSON, default=dict)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+    __table_args__ = (
+        Index("ix_billing_job_runs_type_status", "job_type", "status"),
+    )
+
+
+# ─── 12. Durable Customer Notification Outbox ─────────────────────────────────
+
+class NotificationOutbox(Base):
+    """
+    Durable transactional outbox for customer SMS, email, and app notifications.
+    Decouples financial transaction execution from third-party provider availability.
+    """
+    __tablename__ = 'notification_outbox'
+
+    id = Column(GUID(), primary_key=True, default=uuid.uuid4)
+    market_id = Column(String(50), default='mumbai', index=True, nullable=False)
+    customer_id = Column(Integer, ForeignKey('customers.id', ondelete='SET NULL'), nullable=True, index=True)
+    recipient = Column(String(100), nullable=False)  # Phone number or email
+    channel = Column(String(32), default='SMS', nullable=False)  # SMS, EMAIL, WHATSAPP
+    event_type = Column(String(50), nullable=False)  # OTP, PAYMENT_CONFIRMATION, OVERDUE_REMINDER, SUSPENSION_WARNING, RESTORATION
+    message = Column(Text, nullable=False)
+
+    status = Column(String(32), default='QUEUED', index=True, nullable=False)  # QUEUED, SENT, DELIVERED, FAILED, RETRYING
+    attempt_count = Column(Integer, default=0, nullable=False)
+    max_attempts = Column(Integer, default=3, nullable=False)
+    last_error = Column(Text, nullable=True)
+    idempotency_key = Column(String(100), unique=True, index=True, nullable=False)
+    is_simulated = Column(Boolean, default=True, nullable=False)
+
+    scheduled_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    sent_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+    __table_args__ = (
+        Index("ix_notif_outbox_status_sched", "status", "scheduled_at"),
     )

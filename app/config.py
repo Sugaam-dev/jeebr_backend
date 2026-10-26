@@ -51,6 +51,22 @@ class Settings(BaseSettings):
     OLT_PROVIDER: str = os.getenv('OLT_PROVIDER', 'synthetic')  # 'synthetic', 'snmp_mock', 'mock'
     OLT_POLL_INTERVAL_SECONDS: int = int(os.getenv('OLT_POLL_INTERVAL_SECONDS', '60'))
 
+    # Razorpay Payment Gateway Configuration
+    RAZORPAY_KEY_ID: str = os.getenv('RAZORPAY_KEY_ID', '')
+    RAZORPAY_KEY_SECRET: str = os.getenv('RAZORPAY_KEY_SECRET', '')
+    RAZORPAY_WEBHOOK_SECRET: str = os.getenv('RAZORPAY_WEBHOOK_SECRET', '')
+    RAZORPAY_TIMEOUT_SECONDS: float = float(os.getenv('RAZORPAY_TIMEOUT_SECONDS', '10.0'))
+
+    # SMS & Notification Provider Configuration
+    SMS_PROVIDER: str = os.getenv('SMS_PROVIDER', 'simulated')
+    SMS_API_KEY: str = os.getenv('SMS_API_KEY', '')
+    SMS_SENDER_ID: str = os.getenv('SMS_SENDER_ID', 'JEEBR')
+
+    # Invoice Storage Provider Configuration
+    STORAGE_PROVIDER: str = os.getenv('STORAGE_PROVIDER', 'local_disk')
+    STORAGE_BUCKET_NAME: str = os.getenv('STORAGE_BUCKET_NAME', '')
+    STORAGE_BASE_PATH: str = os.getenv('STORAGE_BASE_PATH', 'var/invoices')
+
     model_config = {
         "case_sensitive": True,
         "env_file": ".env",

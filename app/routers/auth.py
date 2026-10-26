@@ -1,3 +1,4 @@
+from app.services.rate_limiter import get_trustworthy_client_ip
 from datetime import datetime
 from typing import List, Optional, Tuple
 from fastapi import APIRouter, Depends, HTTPException, status, Response, Request
@@ -117,7 +118,7 @@ def signup(req: SignupRequest, response: Response, db: Session = Depends(get_db)
 
 @router.post("/login", response_model=Token)
 def login(req: LoginRequest, request: Request, response: Response, db: Session = Depends(get_db)):
-    client_ip = request.client.host if request.client else "unknown"
+    client_ip = get_trustworthy_client_ip(request)
     email_key = req.email.lower().strip()
     rate_key = f"{client_ip}:{email_key}"
     

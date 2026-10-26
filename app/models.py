@@ -114,7 +114,7 @@ class UsageRecord(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     market_id = Column(String(50), default='mumbai', index=True, nullable=False)
-    customer_id = Column(Integer, ForeignKey('customers.id'), nullable=False)
+    customer_id = Column(Integer, ForeignKey('customers.id', ondelete='RESTRICT'), nullable=False)
     monthly_gb = Column(Float, default=0.0)
     quota_gb = Column(Float, default=500.0)
     usage_trend = Column(String(50), default='Stable')  # Declining, Stable, Growing
@@ -195,7 +195,7 @@ class Invoice(Base):
     id = Column(Integer, primary_key=True, index=True)
     market_id = Column(String(50), default='mumbai', index=True, nullable=False)
     invoice_code = Column(String(50), unique=True, index=True, nullable=False)
-    customer_id = Column(Integer, ForeignKey('customers.id'), nullable=False)
+    customer_id = Column(Integer, ForeignKey('customers.id', ondelete='RESTRICT'), nullable=False)
     plan_name = Column(String(100), nullable=False)
     transaction_type = Column(String(50), default='Recharge')  # Recharge Pack, Data Booster, OTT Add-on, Postpaid Bill
     payment_method = Column(String(50), default='UPI')  # UPI (PhonePe/GPay), Net Banking, Card, Autopay
@@ -226,6 +226,14 @@ class Invoice(Base):
     billing_period_end = Column(DateTime, nullable=True)
     idempotency_key = Column(String(100), unique=True, index=True, nullable=True)
     notes = Column(Text, nullable=True)
+    tax_treatment = Column(String(32), default='INTRA_STATE', nullable=False)
+    cgst_amount = Column(Numeric(12, 2), default=0.0, nullable=False)
+    sgst_amount = Column(Numeric(12, 2), default=0.0, nullable=False)
+    igst_amount = Column(Numeric(12, 2), default=0.0, nullable=False)
+    place_of_supply = Column(String(100), nullable=True)
+    supplier_gstin = Column(String(32), nullable=True)
+    customer_gstin = Column(String(32), nullable=True)
+    pdf_storage_key = Column(String(255), nullable=True)
 
     customer = relationship('Customer', back_populates='invoices')
     billing_account = relationship('BillingAccount', back_populates='invoices')

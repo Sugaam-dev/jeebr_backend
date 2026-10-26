@@ -8,6 +8,12 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')
 
 from app.config import settings
 from app.database import Base
+from app.models_finance import (
+    BillingAccount, BillingSubscription, InvoiceLineItem, Payment,
+    PaymentAllocation, CreditNote, RefundRecord, JournalEntry, JournalLine,
+    VoucherRedemption, PaymentWebhookEvent, BillingJobRun, NotificationOutbox
+)
+from app.models_service_plan import ServicePlan
 from app.models import (
     User, UserMarketAssignment, Node, Customer, UsageRecord, Resource, Ticket, Invoice,
     Recommendation, AuditLog, ApprovalCallLog, FieldAssignment,

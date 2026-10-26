@@ -1,3 +1,4 @@
+import os
 import time
 import asyncio
 import logging
@@ -117,3 +118,146 @@ class EngineerLocationRateLimiter:
 
 # Global singleton instance
 location_rate_limiter = EngineerLocationRateLimiter(min_interval_seconds=3.0)
+
+
+
+# ─── Distributed Login Rate Limiting (Phase 9B Workstream C) ─────────────────
+
+_MAX_LOGIN_ATTEMPTS = 5
+_LOCKOUT_SECONDS = 300  # 5 minutes
+
+
+class DistributedLoginRateLimiter:
+    """
+    Atomic rate limiter with Redis backend and bounded in-memory development fallback.
+    Protects user login endpoints from credential stuffing and brute force attacks.
+    """
+
+    def __init__(self):
+        self._memory_store: Dict[str, list] = {}
+        self._max_memory_entries = 10000
+
+    def _get_redis_client(self):
+        redis_url = getattr(settings, "REDIS_URL", None)
+        if redis_url and redis_url.strip():
+            try:
+                import redis
+                return redis.from_url(redis_url.strip(), decode_responses=True)
+            except Exception as e:
+                logger.error(f"[RATE_LIMITER] Redis connection failed: {e}")
+                if settings.ENVIRONMENT.lower() in ("production", "prod"):
+                    raise HTTPException(
+                        status_code=503,
+                        detail="Authentication rate-limiting service unavailable in production."
+                    )
+        elif settings.ENVIRONMENT.lower() in ("production", "prod"):
+            logger.error("[RATE_LIMITER] REDIS_URL not configured in production.")
+            raise HTTPException(
+                status_code=503,
+                detail="Production authentication rate limiting is unconfigured."
+            )
+        return None
+
+    def check_rate_limit(self, identifier: str, max_attempts: int = _MAX_LOGIN_ATTEMPTS) -> None:
+        """Throws 429 if rate limit has been exceeded."""
+        clean_key = f"rate_limit:login:{identifier.lower().strip()}"
+        r = self._get_redis_client()
+
+        if r is not None:
+            try:
+                attempts = r.get(clean_key)
+                if attempts is not None and int(attempts) >= max_attempts:
+                    ttl = r.ttl(clean_key)
+                    minutes = max(1, (ttl // 60) + 1)
+                    raise HTTPException(
+                        status_code=429,
+                        detail=f"Too many failed login attempts. Please try again after {minutes} minutes."
+                    )
+                return
+            except HTTPException:
+                raise
+            except Exception as e:
+                logger.error(f"[RATE_LIMITER] Redis query failed: {e}")
+                if settings.ENVIRONMENT.lower() in ("production", "prod"):
+                    raise HTTPException(
+                        status_code=503,
+                        detail="Authentication rate-limiting service unavailable in production."
+                    )
+
+        # In-memory development/testing fallback
+        now = time.time()
+        history = self._memory_store.get(clean_key, [])
+        recent = [t for t in history if (now - t) < _LOCKOUT_SECONDS]
+        self._memory_store[clean_key] = recent
+        if len(recent) >= max_attempts:
+            raise HTTPException(
+                status_code=429,
+                detail=f"Too many failed login attempts. Please try again after {_LOCKOUT_SECONDS // 60} minutes."
+            )
+
+    def record_failure(self, identifier: str) -> None:
+        """Atomically increment failed attempts counter with TTL."""
+        clean_key = f"rate_limit:login:{identifier.lower().strip()}"
+        r = self._get_redis_client()
+
+        if r is not None:
+            try:
+                pipe = r.pipeline()
+                pipe.incr(clean_key)
+                pipe.expire(clean_key, _LOCKOUT_SECONDS)
+                pipe.execute()
+                return
+            except Exception as e:
+                logger.error(f"[RATE_LIMITER] Redis record failed: {e}")
+                if settings.ENVIRONMENT.lower() in ("production", "prod"):
+                    raise HTTPException(
+                        status_code=503,
+                        detail="Authentication rate-limiting service unavailable in production."
+                    )
+
+        # In-memory development fallback
+        now = time.time()
+        if len(self._memory_store) > self._max_memory_entries:
+            self._memory_store.clear()
+        attempts = self._memory_store.get(clean_key, [])
+        attempts.append(now)
+        self._memory_store[clean_key] = attempts
+
+    def clear(self, identifier: str) -> None:
+        """Clear rate limit counter upon successful authentication."""
+        clean_key = f"rate_limit:login:{identifier.lower().strip()}"
+        r = self._get_redis_client()
+        if r is not None:
+            try:
+                r.delete(clean_key)
+                return
+            except Exception:
+                pass
+        self._memory_store.pop(clean_key, None)
+
+    def reset_in_memory(self):
+        self._memory_store.clear()
+
+
+login_rate_limiter = DistributedLoginRateLimiter()
+
+
+def get_trustworthy_client_ip(request) -> str:
+    """
+    Extracts client IP. Only inspects X-Forwarded-For if client IP matches TRUSTED_PROXIES.
+    """
+    if not request.client:
+        return "unknown"
+
+    host = request.client.host
+    trusted_proxies_cfg = getattr(settings, "TRUSTED_PROXIES", "").strip() if hasattr(settings, "TRUSTED_PROXIES") else os.getenv("TRUSTED_PROXIES", "").strip()
+    if not trusted_proxies_cfg:
+        return host
+
+    trusted = [p.strip() for p in trusted_proxies_cfg.split(",") if p.strip()]
+    if host in trusted:
+        x_forwarded_for = request.headers.get("X-Forwarded-For")
+        if x_forwarded_for:
+            parts = [p.strip() for p in x_forwarded_for.split(",")]
+            return parts[0]
+    return host

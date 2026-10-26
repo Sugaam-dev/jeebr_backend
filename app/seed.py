@@ -8,6 +8,7 @@ from app.models import (
 )
 from app.auth import hash_password
 from app.services.rbac_service import ensure_rbac_seeded
+from app.services.catalog_service import seed_service_plans_from_canonical
 
 def seed_database():
     print("Ensuring database tables in Supabase / PostgreSQL...")
@@ -101,6 +102,7 @@ def seed_database():
         # Seed Kolkata Market
         print("\n--- Seeding Market: Kolkata ---")
         seed_market_dataset(db, market_id="kolkata", users=users)
+        seed_service_plans_from_canonical(db)
 
         print("\n[SUCCESS] Both Mumbai and Kolkata market datasets successfully seeded into the database!")
 
