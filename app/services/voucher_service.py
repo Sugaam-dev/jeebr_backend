@@ -17,8 +17,9 @@ from typing import Optional, Dict, Any, List
 from sqlalchemy.orm import Session
 from sqlalchemy import or_
 
-from app.models import Customer, User, AuditLog
+from app.models import Customer, User, AuditLog, Invoice
 from app.models_crm import CRMCustomer, CRMActivity, ActivityType
+from app.models_voucher import Voucher, VoucherStatus, VoucherDefinitionType
 from app.models_finance import (
     VoucherRedemption, VoucherType, VoucherRedemptionStatus,
     ChartOfAccounts, BillingAccount
@@ -45,16 +46,29 @@ def redeem_customer_voucher(
     Redeems a customer promotional or retention voucher with real billing / provisioning fulfillment.
     Guarantees single-use per customer, idempotent re-submission handling, and no shadow accounting.
     """
-    if not idempotency_key:
-        idempotency_key = f"IDEM-VCH-{customer_id}-{voucher_code}"
-
-    # 1. Idempotency Check: return existing redemption if already processed
-    existing_redemption = db.query(VoucherRedemption).filter(
-        or_(
-            VoucherRedemption.idempotency_key == idempotency_key,
-            (VoucherRedemption.voucher_code == voucher_code) & (VoucherRedemption.customer_id == customer_id)
-        )
+    # Resolve campaign definition if one exists
+    v_def = db.query(Voucher).filter(
+        Voucher.voucher_code == voucher_code.strip().upper()
     ).first()
+
+    if not idempotency_key:
+        if v_def and v_def.per_customer_limit > 1:
+            idempotency_key = f"IDEM-VCH-{customer_id}-{voucher_code}-{invoice_id or uuid.uuid4().hex[:8]}"
+        else:
+            idempotency_key = f"IDEM-VCH-{customer_id}-{voucher_code}"
+
+    # 1. Idempotency Check: return existing redemption if already processed with this key
+    existing_redemption = db.query(VoucherRedemption).filter(
+        VoucherRedemption.idempotency_key == idempotency_key
+    ).first()
+
+    # Fallback idempotency check for legacy/single-use vouchers when per_customer_limit == 1
+    if not existing_redemption and (not v_def or v_def.per_customer_limit == 1):
+        existing_redemption = db.query(VoucherRedemption).filter(
+            VoucherRedemption.voucher_code == voucher_code,
+            VoucherRedemption.customer_id == customer_id,
+            VoucherRedemption.status.in_([VoucherRedemptionStatus.FULFILLED, VoucherRedemptionStatus.RECONCILIATION_REQUIRED])
+        ).first()
 
     if existing_redemption:
         if existing_redemption.status == VoucherRedemptionStatus.FULFILLED:
@@ -63,8 +77,8 @@ def redeem_customer_voucher(
         elif existing_redemption.status == VoucherRedemptionStatus.RECONCILIATION_REQUIRED:
             return existing_redemption
 
-    # 2. Resolve Customer & CRM records
-    customer = db.query(Customer).filter(Customer.id == customer_id).first()
+    # 2. Resolve Customer & CRM records with row lock to serialize concurrent customer redemptions
+    customer = db.query(Customer).filter(Customer.id == customer_id).with_for_update().first()
     if not customer:
         raise VoucherRedemptionError(f"Customer #{customer_id} does not exist.")
 
@@ -77,6 +91,52 @@ def redeem_customer_voucher(
 
     account = ensure_billing_account(db, customer.id, market_id=customer.market_id)
 
+    voucher_def_id = None
+    if v_def:
+        now = datetime.utcnow()
+        if v_def.status != VoucherStatus.ACTIVE:
+            raise VoucherRedemptionError(f"Voucher '{voucher_code}' is {v_def.status}.")
+        if now < v_def.valid_from or now > v_def.valid_until:
+            raise VoucherRedemptionError(f"Voucher '{voucher_code}' is expired or outside valid date window.")
+        if v_def.market_id != "ALL" and v_def.market_id.lower() != (customer.market_id or "").lower():
+            raise VoucherRedemptionError(f"Voucher '{voucher_code}' is not valid in market '{customer.market_id}'.")
+
+        # Per-customer check
+        cust_redemptions_count = db.query(VoucherRedemption).filter(
+            VoucherRedemption.voucher_code == v_def.voucher_code,
+            VoucherRedemption.customer_id == customer.id,
+            VoucherRedemption.status == VoucherRedemptionStatus.FULFILLED
+        ).count()
+        if cust_redemptions_count >= v_def.per_customer_limit:
+            raise VoucherRedemptionError(
+                f"Per-customer limit ({v_def.per_customer_limit}) reached for voucher '{voucher_code}'."
+            )
+
+        # Atomic reservation on Voucher definition
+        updated_rows = db.query(Voucher).filter(
+            Voucher.id == v_def.id,
+            Voucher.current_redemptions < Voucher.max_redemptions,
+            Voucher.status == VoucherStatus.ACTIVE
+        ).update(
+            {"current_redemptions": Voucher.current_redemptions + 1, "updated_at": datetime.utcnow()},
+            synchronize_session=False
+        )
+        if updated_rows == 0:
+            raise VoucherRedemptionError(f"Voucher '{voucher_code}' maximum redemption quota reached.")
+
+        # Automatically exhaust voucher when current_redemptions reaches or exceeds max_redemptions
+        db.query(Voucher).filter(
+            Voucher.id == v_def.id,
+            Voucher.current_redemptions >= Voucher.max_redemptions
+        ).update(
+            {"status": VoucherStatus.EXHAUSTED},
+            synchronize_session=False
+        )
+
+        voucher_def_id = v_def.id
+        if v_def.voucher_type == VoucherDefinitionType.PERCENT_DISCOUNT:
+            voucher_type = VoucherType.PERCENT_DISCOUNT
+
     # 3. Process Benefit according to Voucher Type
     status_result = VoucherRedemptionStatus.PENDING
     financial_credit = Decimal('0.00')
@@ -85,9 +145,23 @@ def redeem_customer_voucher(
     target_invoice_id = invoice_id
     prov_order_id = None
 
-    if voucher_type == VoucherType.BILL_DISCOUNT:
-        # Standard concession policy: ₹100 goodwill courtesy discount or 20% on plan
-        discount_val = Decimal('100.00')
+    if voucher_type in (VoucherType.BILL_DISCOUNT, VoucherType.PERCENT_DISCOUNT):
+        if v_def and v_def.voucher_type == VoucherDefinitionType.PERCENT_DISCOUNT:
+            # Calculate percentage discount
+            base_amt = Decimal("1000.00")
+            if invoice_id:
+                inv = db.query(Invoice).filter(Invoice.id == invoice_id).first()
+                if inv and inv.total_amount:
+                    base_amt = Decimal(str(inv.total_amount))
+            discount_val = base_amt * (Decimal(str(v_def.discount_percent or 0)) / Decimal("100.00"))
+            if v_def.max_discount_cap:
+                discount_val = min(discount_val, Decimal(str(v_def.max_discount_cap)))
+            discount_val = round(discount_val, 2)
+        elif v_def and v_def.discount_amount > 0:
+            discount_val = round(Decimal(str(v_def.discount_amount)), 2)
+        else:
+            discount_val = Decimal('100.00')
+
         financial_credit = discount_val
 
         # Issue traceable credit note on customer billing account
@@ -146,6 +220,7 @@ def redeem_customer_voucher(
     # 4. Record Immutable Redemption Record
     redemption = VoucherRedemption(
         id=uuid.uuid4(),
+        voucher_id=voucher_def_id,
         voucher_code=voucher_code,
         voucher_type=voucher_type,
         customer_id=customer.id,

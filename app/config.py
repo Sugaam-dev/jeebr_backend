@@ -9,6 +9,30 @@ INSECURE_DEFAULT_KEYS = {
     'jwt-secret-key'
 }
 
+def validate_jwt_secret(env: str, secret: str) -> None:
+    """
+    Validate JWT secret key integrity.
+    In production environments, startup fails closed if the secret is absent,
+    empty, too short (<32 chars), or matches any known insecure default.
+    Error messages never expose the configured secret value.
+    """
+    is_prod = (env or "").lower() in ('production', 'prod')
+    if is_prod:
+        if not secret or not secret.strip():
+            raise RuntimeError(
+                "FATAL SECURITY VIOLATION: A valid SECRET_KEY must be provided via environment variables in production."
+            )
+        clean_secret = secret.strip()
+        if clean_secret.lower() in {k.lower() for k in INSECURE_DEFAULT_KEYS}:
+            raise RuntimeError(
+                "FATAL SECURITY VIOLATION: Insecure default SECRET_KEY detected in production. "
+                "A cryptographically random SECRET_KEY must be configured."
+            )
+        if len(clean_secret) < 32:
+            raise RuntimeError(
+                "FATAL SECURITY VIOLATION: SECRET_KEY must be at least 32 characters long in production."
+            )
+
 class Settings(BaseSettings):
     PROJECT_NAME: str = 'SentinelOS — Enterprise AI Governance (PMRG Solution LLP)'
     API_V1_STR: str = '/api'
@@ -21,6 +45,9 @@ class Settings(BaseSettings):
     SECRET_KEY: str = os.getenv('SECRET_KEY', 'super-secret-key-2026-govern-452154215')
     ALGORITHM: str = 'HS256'
     ACCESS_TOKEN_EXPIRE_MINUTES: int = int(os.getenv('ACCESS_TOKEN_EXPIRE_MINUTES', '60'))  # 60 minutes
+    
+    # Demo Login Configuration (Strictly disabled by default; must be explicitly opted into in non-prod)
+    ENABLE_DEMO_LOGIN: bool = os.getenv('ENABLE_DEMO_LOGIN', 'false').lower() in ('true', '1', 'yes')
     
     # Cookie security configuration
     COOKIE_SECURE: bool = os.getenv('COOKIE_SECURE', 'false').lower() in ('true', '1', 'yes')
@@ -67,6 +94,17 @@ class Settings(BaseSettings):
     STORAGE_BUCKET_NAME: str = os.getenv('STORAGE_BUCKET_NAME', '')
     STORAGE_BASE_PATH: str = os.getenv('STORAGE_BASE_PATH', 'var/invoices')
 
+    # Automated Background Scheduler Runner Configuration
+    SCHEDULER_ENABLED: bool = os.getenv('SCHEDULER_ENABLED', 'true').lower() in ('true', '1', 'yes')
+    SCHEDULER_TIMEZONE: str = os.getenv('SCHEDULER_TIMEZONE', 'UTC')
+    SCHEDULER_HEARTBEAT_INTERVAL_SECONDS: int = int(os.getenv('SCHEDULER_HEARTBEAT_INTERVAL_SECONDS', '10'))
+    SCHEDULER_LEADER_TTL_SECONDS: int = int(os.getenv('SCHEDULER_LEADER_TTL_SECONDS', '30'))
+    SCHEDULER_MAX_CONCURRENT_JOBS: int = int(os.getenv('SCHEDULER_MAX_CONCURRENT_JOBS', '3'))
+    SCHEDULER_BILLING_CYCLE_CRON: str = os.getenv('SCHEDULER_BILLING_CYCLE_CRON', '0 0 * * *')
+    SCHEDULER_DUNNING_CRON: str = os.getenv('SCHEDULER_DUNNING_CRON', '0 6 * * *')
+    SCHEDULER_OUTBOX_INTERVAL_SECONDS: int = int(os.getenv('SCHEDULER_OUTBOX_INTERVAL_SECONDS', '300'))
+    SCHEDULER_CATCHUP_MISSED_RUNS: bool = os.getenv('SCHEDULER_CATCHUP_MISSED_RUNS', 'false').lower() in ('true', '1', 'yes')
+
     model_config = {
         "case_sensitive": True,
         "env_file": ".env",
@@ -75,16 +113,5 @@ class Settings(BaseSettings):
 
 settings = Settings()
 
-# Enforce production secret key integrity
-is_production = settings.ENVIRONMENT.lower() in ('production', 'prod')
-if is_production:
-    if not settings.SECRET_KEY or len(settings.SECRET_KEY) < 16:
-        raise RuntimeError(
-            "FATAL SECURITY VIOLATION: A valid SECRET_KEY must be provided via environment variables."
-        )
-    elif settings.SECRET_KEY in INSECURE_DEFAULT_KEYS or len(settings.SECRET_KEY) < 32:
-        import logging
-        logging.getLogger("uvicorn.error").warning(
-            "SECURITY WARNING: A cryptographically random SECRET_KEY (minimum 32 characters) "
-            "should be provided in production via environment variables."
-        )
+# Enforce fail-closed production secret key integrity
+validate_jwt_secret(settings.ENVIRONMENT, settings.SECRET_KEY)

@@ -120,6 +120,33 @@ class ServiceActivationOrder(Base):
     requested_by = relationship('User', foreign_keys=[requested_by_id])
     approved_by = relationship('User', foreign_keys=[approved_by_id])
     logs = relationship('ProvisioningLog', back_populates='order', cascade='all, delete-orphan')
+    billing_subscription = relationship('BillingSubscription', back_populates='provisioning_order', uselist=False)
+
+    @property
+    def billing_account_number(self) -> Optional[str]:
+        if self.billing_subscription and self.billing_subscription.billing_account:
+            return self.billing_subscription.billing_account.account_number
+        from sqlalchemy.orm import object_session
+        sess = object_session(self)
+        if sess:
+            from app.models_finance import BillingSubscription
+            sub = sess.query(BillingSubscription).filter(BillingSubscription.provisioning_order_id == self.id).first()
+            if sub and sub.billing_account:
+                return sub.billing_account.account_number
+        return None
+
+    @property
+    def billing_subscription_code(self) -> Optional[str]:
+        if self.billing_subscription:
+            return self.billing_subscription.subscription_code
+        from sqlalchemy.orm import object_session
+        sess = object_session(self)
+        if sess:
+            from app.models_finance import BillingSubscription
+            sub = sess.query(BillingSubscription).filter(BillingSubscription.provisioning_order_id == self.id).first()
+            if sub:
+                return sub.subscription_code
+        return None
 
 
 # ─── Provisioning Audit & State Transition Log ────────────────────────────────

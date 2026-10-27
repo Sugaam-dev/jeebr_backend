@@ -19,7 +19,8 @@ class User(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
 
     # Relationships
-    reviews = relationship('Recommendation', back_populates='reviewer')
+    reviews = relationship('Recommendation', back_populates='reviewer', foreign_keys='Recommendation.reviewed_by_id')
+    executed_recommendations = relationship('Recommendation', foreign_keys='Recommendation.executed_by_id')
     audit_logs = relationship('AuditLog', back_populates='user')
     market_assignments = relationship('UserMarketAssignment', back_populates='user', foreign_keys='UserMarketAssignment.user_id', cascade='all, delete-orphan')
 
@@ -248,23 +249,46 @@ class Recommendation(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     market_id = Column(String(50), default='mumbai', index=True, nullable=False)
-    source_module = Column(String(100), nullable=False)  # Predictive Service Assurance, Churn Prediction, Intelligent Journeys, OSS/BSS Orchestration, Revenue Assurance
-    target_entity_type = Column(String(50), nullable=False)  # Node, Customer, Ticket, Invoice
+    recommendation_code = Column(String(50), unique=True, index=True, nullable=True)
+    source_module = Column(String(100), nullable=False)  # Predictive Service Assurance, Churn Prediction, Intelligent Journeys, OSS/BSS Orchestration, Revenue Assurance, Network Operations
+    source_alarm_id = Column(Integer, ForeignKey('network_alarms.id', ondelete='SET NULL'), nullable=True)
+    source_alarm_code = Column(String(100), nullable=True)
+    incident_type = Column(String(50), nullable=True)
+    target_entity_type = Column(String(50), nullable=False)  # Node, Customer, Ticket, Invoice, NetworkDevice, NetworkLink, OLTPort
     target_entity_id = Column(Integer, nullable=False)
     target_entity_label = Column(String(200), nullable=False)
     title = Column(String(255), nullable=False)
     description = Column(Text, nullable=False)
     recommended_action = Column(String(200), nullable=False)
+    proposed_action = Column(String(100), nullable=True)
     action_payload = Column(JSON, default=dict)
     confidence_score = Column(Float, nullable=False)  # 0.0 to 1.0
-    status = Column(String(50), default='PENDING')  # PENDING, APPROVED, REJECTED, EXECUTED
+    confidence_basis = Column(String(255), nullable=True)
+    risk_level = Column(String(20), default='MEDIUM', nullable=False)  # LOW, MEDIUM, HIGH, CRITICAL
+    evidence = Column(JSON, default=dict)
+    impact_assessment = Column(JSON, default=dict)
+    ai_provider = Column(String(50), default='DETERMINISTIC_RULES_ENGINE_FALLBACK')
+    is_ai_generated = Column(Boolean, default=False)
+    status = Column(String(50), default='PENDING', index=True)  # PENDING, PROPOSED, APPROVED, REJECTED, EXPIRED, EXECUTING, EXECUTED, FAILED
     created_at = Column(DateTime, default=datetime.utcnow)
+    expires_at = Column(DateTime, nullable=True)
     reviewed_by_id = Column(Integer, ForeignKey('users.id'), nullable=True)
     reviewed_at = Column(DateTime, nullable=True)
     review_notes = Column(Text, nullable=True)
+    rejection_reason = Column(Text, nullable=True)
+    action_fingerprint = Column(String(64), nullable=True)
+    executed_by_id = Column(Integer, ForeignKey('users.id'), nullable=True)
+    executed_at = Column(DateTime, nullable=True)
+    execution_status = Column(String(50), nullable=True)
+    execution_result = Column(JSON, default=dict)
+    execution_idempotency_key = Column(String(100), unique=True, index=True, nullable=True)
+    retry_count = Column(Integer, default=0)
+    max_retries = Column(Integer, default=2)
 
-    reviewer = relationship('User', back_populates='reviews')
+    reviewer = relationship('User', back_populates='reviews', foreign_keys=[reviewed_by_id])
+    executor = relationship('User', foreign_keys=[executed_by_id])
     audit_logs = relationship('AuditLog', back_populates='recommendation')
+    source_alarm = relationship('NetworkAlarm')
 
 
 class AuditLog(Base):
@@ -558,6 +582,39 @@ class NetworkAlarm(Base):
     device = relationship('NetworkDevice', back_populates='alarms')
 
 
+class NetworkScenario(Base):
+    """
+    Gate 5: Authoritative durable persistence for synthetic network fault scenarios.
+    Ensures scenario lifecycle, topology snapshots, active status, idempotency,
+    and recovery survive restarts and multi-worker execution.
+    """
+    __tablename__ = 'network_scenarios'
+
+    id = Column(Integer, primary_key=True, index=True)
+    scenario_id = Column(String(64), unique=True, index=True, nullable=False)
+    scenario_type = Column(String(32), index=True, nullable=False)  # FIBER_CUT, OPTICAL_DEGRADE, PEAK_TRAFFIC, RECOVERY
+    target_type = Column(String(16), nullable=False)  # LINK, DEVICE, PORT
+    target_id = Column(String(64), index=True, nullable=False)
+    market_id = Column(String(32), default='mumbai', index=True, nullable=False)
+    severity = Column(String(16), default='CRITICAL', nullable=False)  # CRITICAL, WARNING, INFO
+    status = Column(String(32), default='ACTIVE', index=True, nullable=False)  # ACTIVE, RECOVERING, RECOVERED, FAILED
+    parameters = Column(JSON, default=dict)
+    snapshot = Column(JSON, default=dict)  # Pre-fault state snapshot of links, devices, ports
+    affected_links_count = Column(Integer, default=0)
+    affected_devices_count = Column(Integer, default=0)
+    affected_ports_count = Column(Integer, default=0)
+    affected_customers_count = Column(Integer, default=0)
+    alarms_generated_count = Column(Integer, default=0)
+    alarms_generated = Column(JSON, default=list)  # List of alarm codes generated by this scenario
+    summary = Column(Text, nullable=True)
+    idempotency_key = Column(String(128), unique=True, index=True, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    recovered_at = Column(DateTime, nullable=True)
+    recovered_by_id = Column(Integer, ForeignKey('users.id'), nullable=True)
+
+    recovered_by = relationship('User', foreign_keys=[recovered_by_id])
+
+
 # ============================================================================
 # PHASE 8: Device Metric Thresholds & Historical Telemetry Records
 # ============================================================================
@@ -627,3 +684,15 @@ from app.models_finance import (
 
 
 
+
+# SentinelOS Carrier Inventory & Asset Management Domain Models
+from app.models_inventory import (
+    EquipmentCatalog, Warehouse, WarehouseStock, InventoryDevice, StockMovement
+)
+
+# SentinelOS Canonical Service Plans & Tariff Management
+from app.models_service_plan import ServicePlan
+from app.models_tariff import TariffPlan, TariffStatus, BillingTiming
+
+# SentinelOS Voucher Campaigns & Dynamic Concessions
+from app.models_voucher import Voucher, VoucherStatus, VoucherDefinitionType

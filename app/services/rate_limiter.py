@@ -61,8 +61,8 @@ class EngineerLocationRateLimiter:
                 if is_prod:
                     logger.error("[RATE_LIMITER] Distributed Redis unavailable in production. Failing closed.")
                     return True, self.min_interval_seconds
-        elif is_prod and redis_url and redis_url.strip():
-            logger.error("[RATE_LIMITER] Distributed Redis connection failed in production. Failing closed.")
+        elif is_prod:
+            logger.error("[RATE_LIMITER] Distributed Redis unconfigured or unreachable in production. Failing closed.")
             return True, self.min_interval_seconds
 
         async with self._lock:
@@ -92,8 +92,8 @@ class EngineerLocationRateLimiter:
                 logger.warning(f"[RATE_LIMITER] Redis error in record_accepted_ping ({e})")
                 if is_prod:
                     raise HTTPException(status_code=503, detail="Distributed rate limiter service unavailable in production.")
-        elif is_prod and redis_url and redis_url.strip():
-            raise HTTPException(status_code=503, detail="Distributed rate limiter is unreachable in production.")
+        elif is_prod:
+            raise HTTPException(status_code=503, detail="Distributed rate limiter is unconfigured or unreachable in production.")
 
         async with self._lock:
             self._in_memory_timestamps[engineer_id] = now

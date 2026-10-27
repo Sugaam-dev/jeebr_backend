@@ -48,7 +48,8 @@ def ensure_billing_account(
     billing_type: str = BillingType.POSTPAID,
     currency: str = "INR",
     credit_limit: float = 0.0,
-    payment_term_days: int = 15
+    payment_term_days: int = 15,
+    auto_commit: bool = True
 ) -> BillingAccount:
     """
     Find or lazily create an authoritative BillingAccount for an operational or CRM customer.
@@ -97,8 +98,11 @@ def ensure_billing_account(
         updated_at=datetime.utcnow()
     )
     db.add(account)
-    db.commit()
-    db.refresh(account)
+    if auto_commit:
+        db.commit()
+        db.refresh(account)
+    else:
+        db.flush()
     return account
 
 
@@ -111,7 +115,8 @@ def create_subscription(
     billing_account_id: Optional[str] = None,
     billing_frequency: str = "MONTHLY",
     start_date: Optional[datetime] = None,
-    provisioning_order_id: Optional[int] = None
+    provisioning_order_id: Optional[int] = None,
+    auto_commit: bool = True
 ) -> BillingSubscription:
     """
     Subscribe a customer to a canonical telecom plan from the tariff catalog.
@@ -130,7 +135,14 @@ def create_subscription(
     else:
         account = ensure_billing_account(db, customer_id)
 
-    # 3. Check for existing active subscription to the same plan
+    # 3. Check for existing active subscription to the same plan or order
+    if provisioning_order_id:
+        order_sub = db.query(BillingSubscription).filter(
+            BillingSubscription.provisioning_order_id == provisioning_order_id
+        ).first()
+        if order_sub:
+            return order_sub
+
     existing_sub = db.query(BillingSubscription).filter(
         BillingSubscription.billing_account_id == account.id,
         BillingSubscription.plan_id == plan_id,
@@ -138,6 +150,13 @@ def create_subscription(
     ).first()
 
     if existing_sub:
+        if provisioning_order_id and existing_sub.provisioning_order_id is None:
+            existing_sub.provisioning_order_id = provisioning_order_id
+            if auto_commit:
+                db.commit()
+                db.refresh(existing_sub)
+            else:
+                db.flush()
         return existing_sub
 
     # 4. Compute effective period dates
@@ -171,9 +190,139 @@ def create_subscription(
         updated_at=datetime.utcnow()
     )
     db.add(subscription)
-    db.commit()
-    db.refresh(subscription)
+    if auto_commit:
+        db.commit()
+        db.refresh(subscription)
+    else:
+        db.flush()
     return subscription
+
+
+def initialize_billing_for_order(
+    order: Any,
+    db: Session,
+    actor: Optional[Any] = None,
+    auto_commit: bool = False
+) -> Tuple[BillingAccount, BillingSubscription]:
+    """
+    Safely and idempotently initializes the BillingAccount and BillingSubscription
+    for an authoritative ServiceActivationOrder upon reaching ACTIVE status.
+
+    Invariants:
+    1. Validates customer existence, market isolation, and approved service plan.
+    2. Derives subscription validity and next billing date strictly from plan rules.
+    3. Strictly idempotent: replaying activation returns existing billing entities without duplication.
+    4. Atomic transaction boundary: flushes changes without partial commits if auto_commit=False.
+    5. Actionable error reporting on failure.
+    6. Does NOT generate duplicate invoices or trigger payment gateway charges.
+    """
+    if not order:
+        raise ValueError("Cannot initialize billing for a null provisioning order.")
+
+    # 1. Validate customer existence
+    customer = db.query(Customer).filter(Customer.id == order.customer_id).first()
+    if not customer:
+        raise ValueError(f"Cannot initialize billing: Customer #{order.customer_id} does not exist.")
+
+    # 2. Strict market boundary isolation
+    order_market = (order.market_id or "").strip().lower()
+    cust_market = (customer.market_id or "").strip().lower()
+    if order_market != cust_market:
+        raise ValueError(
+            f"Cross-market billing violation: Order market is '{order.market_id}', "
+            f"but customer #{customer.id} belongs to market '{customer.market_id}'."
+        )
+
+    # 3. Validate service plan in canonical catalog
+    plan = get_service_plan_by_id(order.plan_id)
+    if not plan:
+        raise ValueError(
+            f"Cannot initialize billing: Service plan '{order.plan_id}' does not exist in the approved tariff catalog."
+        )
+
+    # 4. Idempotency Check: Existing subscription linked to this provisioning order
+    existing_sub = db.query(BillingSubscription).filter(
+        BillingSubscription.provisioning_order_id == order.id
+    ).first()
+
+    if existing_sub:
+        account = (
+            existing_sub.billing_account or
+            db.query(BillingAccount).filter(BillingAccount.id == existing_sub.billing_account_id).first()
+        )
+        return account, existing_sub
+
+    # 5. Resolve or create BillingAccount
+    plan_billing_type = plan.get("billing_type") or (
+        BillingType.PREPAID if customer.customer_type == "Prepaid" else BillingType.POSTPAID
+    )
+
+    account = ensure_billing_account(
+        db=db,
+        customer_id=customer.id,
+        market_id=order.market_id,
+        billing_type=plan_billing_type,
+        auto_commit=auto_commit
+    )
+
+    # 6. Check if an active subscription for this plan already exists for the account without order linkage
+    unlinked_sub = db.query(BillingSubscription).filter(
+        BillingSubscription.billing_account_id == account.id,
+        BillingSubscription.plan_id == order.plan_id,
+        BillingSubscription.status == SubscriptionStatus.ACTIVE,
+        BillingSubscription.provisioning_order_id.is_(None)
+    ).first()
+
+    if unlinked_sub:
+        unlinked_sub.provisioning_order_id = order.id
+        if auto_commit:
+            db.commit()
+            db.refresh(unlinked_sub)
+        else:
+            db.flush()
+        return account, unlinked_sub
+
+    # 7. Create new BillingSubscription derived from canonical plan
+    now = order.provisioned_at or datetime.utcnow()
+    validity_days = plan.get("validity_days") or order.validity_days or 30
+    period_end = now + timedelta(days=validity_days)
+    billing_freq = plan.get("billing_frequency") or "MONTHLY"
+
+    count = db.query(BillingSubscription).count()
+    sub_code = f"SUB-{account.market_id[:3].upper()}-{now.year}-{count + 1:05d}"
+
+    subscription = BillingSubscription(
+        id=uuid.uuid4(),
+        subscription_code=sub_code,
+        billing_account_id=account.id,
+        customer_id=account.customer_id,
+        crm_customer_id=account.crm_customer_id,
+        market_id=account.market_id,
+        plan_id=plan["plan_id"],
+        plan_name=plan["name"],
+        billing_type=plan_billing_type,
+        billing_frequency=billing_freq,
+        unit_price=_format_money(plan["price_inr"]),
+        currency=account.currency,
+        status=SubscriptionStatus.ACTIVE,
+        start_date=now,
+        current_period_start=now,
+        current_period_end=period_end,
+        next_billing_date=period_end,
+        provisioning_order_id=order.id,
+        created_at=datetime.utcnow(),
+        updated_at=datetime.utcnow()
+    )
+
+    db.add(subscription)
+
+    if auto_commit:
+        db.commit()
+        db.refresh(subscription)
+    else:
+        db.flush()
+
+    return account, subscription
 
 
 def transition_subscription_status(

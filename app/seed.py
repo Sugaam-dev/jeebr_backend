@@ -1,6 +1,7 @@
 import random
 from datetime import datetime, timedelta
-from app.database import SessionLocal, engine, Base
+import sys
+import app.database as app_db
 from app.models import (
     User, UserMarketAssignment, Node, Customer, UsageRecord, Ticket, Invoice, Recommendation, AuditLog, Resource,
     FieldAssignment, TrackingSession, LocationPing, FieldOtp,
@@ -9,16 +10,27 @@ from app.models import (
 from app.auth import hash_password
 from app.services.rbac_service import ensure_rbac_seeded
 from app.services.catalog_service import seed_service_plans_from_canonical
+from app.services.tariff_service import seed_canonical_tariffs
+
+# Export default references
+engine = app_db.engine
+SessionLocal = app_db.SessionLocal
+Base = app_db.Base
 
 def seed_database():
-    print("Ensuring database tables in Supabase / PostgreSQL...")
-    Base.metadata.create_all(bind=engine)
+    this_mod = sys.modules[__name__]
+    target_engine = getattr(this_mod, 'engine', app_db.engine)
+    target_SessionLocal = getattr(this_mod, 'SessionLocal', app_db.SessionLocal)
+    target_Base = getattr(this_mod, 'Base', app_db.Base)
+
+    print("Ensuring database tables in database...")
+    target_Base.metadata.create_all(bind=target_engine)
 
     from sqlalchemy import text
     try:
-        with engine.connect() as conn:
-            if engine.dialect.name == "sqlite":
-                for tbl in reversed(Base.metadata.sorted_tables):
+        with target_engine.connect() as conn:
+            if target_engine.dialect.name == "sqlite":
+                for tbl in reversed(target_Base.metadata.sorted_tables):
                     try:
                         conn.execute(text(f"DELETE FROM {tbl.name};"))
                     except Exception:
@@ -30,7 +42,7 @@ def seed_database():
     except Exception as e:
         print(f"Note on truncate/cleanup: {e}")
 
-    db = SessionLocal()
+    db = target_SessionLocal()
     try:
         print("0. Seeding RBAC Permissions and Roles...")
         ensure_rbac_seeded(db)
@@ -103,6 +115,9 @@ def seed_database():
         print("\n--- Seeding Market: Kolkata ---")
         seed_market_dataset(db, market_id="kolkata", users=users)
         seed_service_plans_from_canonical(db)
+        seed_inventory_management(db)
+        seed_canonical_tariffs(db)
+        seed_voucher_campaigns(db)
 
         print("\n[SUCCESS] Both Mumbai and Kolkata market datasets successfully seeded into the database!")
 
@@ -1374,3 +1389,301 @@ def seed_network_topology(db, market_id: str, customers: list):
 
 if __name__ == "__main__":
     seed_database()
+
+
+def seed_inventory_management(db):
+    from app.models_inventory import (
+        EquipmentCatalog, Warehouse, WarehouseStock, InventoryDevice, StockMovement
+    )
+
+    print("Seeding Carrier Inventory & Asset Management...")
+
+    # 1. Equipment Catalogs
+    catalogs_data = [
+        {
+            "sku": "ONT-HUA-HG8145V5",
+            "name": "Huawei EchoLife HG8145V5 GPON ONT",
+            "equipment_type": "ONT",
+            "model": "HG8145V5",
+            "manufacturer": "Huawei",
+            "is_serialized": True,
+            "hardware_specs": {"ports": "4xGE + 1xPOTS + USB", "wifi": "Dual-Band 802.11ac", "optical": "Class B+"},
+            "warranty_months": 12,
+            "unit_cost_inr": 2450.00,
+            "status": "ACTIVE"
+        },
+        {
+            "sku": "ONT-NOK-G140W",
+            "name": "Nokia G-140W-ME GPON Terminal",
+            "equipment_type": "ONT",
+            "model": "G-140W-ME",
+            "manufacturer": "Nokia",
+            "is_serialized": True,
+            "hardware_specs": {"ports": "4xGE + 2xPOTS", "wifi": "Dual-Band Wi-Fi 5", "optical": "Class B+"},
+            "warranty_months": 12,
+            "unit_cost_inr": 2600.00,
+            "status": "ACTIVE"
+        },
+        {
+            "sku": "RTR-TPL-AX1500",
+            "name": "TP-Link Archer AX12 Wi-Fi 6 Router",
+            "equipment_type": "ROUTER",
+            "model": "Archer AX12",
+            "manufacturer": "TP-Link",
+            "is_serialized": True,
+            "hardware_specs": {"ports": "4xGigabit LAN + 1xWAN", "wifi": "Wi-Fi 6 (1500 Mbps)", "bands": "2.4GHz + 5GHz"},
+            "warranty_months": 24,
+            "unit_cost_inr": 1850.00,
+            "status": "ACTIVE"
+        },
+        {
+            "sku": "SPL-1X8-PLC",
+            "name": "1:8 PLC Optical Splitter SC/APC",
+            "equipment_type": "SPLITTER",
+            "model": "PLC-0108-SCA",
+            "manufacturer": "Opterna",
+            "is_serialized": False,
+            "hardware_specs": {"split_ratio": "1:8", "connector": "SC/APC", "insertion_loss_db": 10.5},
+            "warranty_months": 12,
+            "unit_cost_inr": 320.00,
+            "status": "ACTIVE"
+        },
+        {
+            "sku": "SFP-GPON-OLT-C+",
+            "name": "GPON OLT SFP Transceiver Class C+",
+            "equipment_type": "SFP",
+            "model": "SFP-GPON-CPLUS",
+            "manufacturer": "Finisar",
+            "is_serialized": True,
+            "hardware_specs": {"tx_wavelength_nm": 1490, "rx_wavelength_nm": 1310, "data_rate": "2.5G/1.25G"},
+            "warranty_months": 12,
+            "unit_cost_inr": 1150.00,
+            "status": "ACTIVE"
+        }
+    ]
+
+    catalogs = {}
+    for item in catalogs_data:
+        cat = db.query(EquipmentCatalog).filter(EquipmentCatalog.sku == item["sku"]).first()
+        if not cat:
+            cat = EquipmentCatalog(**item)
+            db.add(cat)
+            db.flush()
+        catalogs[item["sku"]] = cat
+
+    # 2. Warehouses
+    warehouses_data = [
+        {
+            "warehouse_code": "WH-MUM-CENTRAL",
+            "name": "Mumbai Central Equipment Depot",
+            "market_id": "mumbai",
+            "address": "Unit 4B, Peninsula Business Park, Lower Parel, Mumbai 400013",
+            "locality": "Lower Parel",
+            "contact_person": "Ramesh Shinde",
+            "contact_phone": "+91 98201 99001",
+            "is_active": True
+        },
+        {
+            "warehouse_code": "WH-MUM-ANDHERI",
+            "name": "Andheri Suburban Spares Depot",
+            "market_id": "mumbai",
+            "address": "Plot 12, MIDC Central Road, Andheri East, Mumbai 400093",
+            "locality": "Andheri East",
+            "contact_person": "Ganesh Surve",
+            "contact_phone": "+91 98201 99002",
+            "is_active": True
+        },
+        {
+            "warehouse_code": "WH-KOL-CENTRAL",
+            "name": "Kolkata Salt Lake Regional Depot",
+            "market_id": "kolkata",
+            "address": "Module 102, Webel IT Park, Sector V, Salt Lake, Kolkata 700091",
+            "locality": "Salt Lake Sector V",
+            "contact_person": "Anirban Ghosh",
+            "contact_phone": "+91 98301 99001",
+            "is_active": True
+        },
+        {
+            "warehouse_code": "WH-KOL-HOWRAH",
+            "name": "Howrah Logistics Depot",
+            "market_id": "kolkata",
+            "address": "Station Road Industrial Area, Howrah, Kolkata 711101",
+            "locality": "Howrah",
+            "contact_person": "Biplab Mondal",
+            "contact_phone": "+91 98301 99002",
+            "is_active": True
+        }
+    ]
+
+    warehouses = {}
+    for wh_data in warehouses_data:
+        wh = db.query(Warehouse).filter(Warehouse.warehouse_code == wh_data["warehouse_code"]).first()
+        if not wh:
+            wh = Warehouse(**wh_data)
+            db.add(wh)
+            db.flush()
+        warehouses[wh_data["warehouse_code"]] = wh
+
+    # 3. Stock Aggregates & Initial Serialized Devices
+    mum_wh = warehouses["WH-MUM-CENTRAL"]
+    kol_wh = warehouses["WH-KOL-CENTRAL"]
+    hua_cat = catalogs["ONT-HUA-HG8145V5"]
+    nok_cat = catalogs["ONT-NOK-G140W"]
+    tpl_cat = catalogs["RTR-TPL-AX1500"]
+    spl_cat = catalogs["SPL-1X8-PLC"]
+
+    stock_configs = [
+        (mum_wh, hua_cat, 45, 2, 10, 200),
+        (mum_wh, nok_cat, 30, 0, 10, 150),
+        (mum_wh, tpl_cat, 25, 0, 5, 100),
+        (mum_wh, spl_cat, 80, 0, 15, 300),
+        (kol_wh, hua_cat, 35, 1, 10, 200),
+        (kol_wh, nok_cat, 20, 0, 10, 150),
+        (kol_wh, tpl_cat, 15, 0, 5, 100),
+        (kol_wh, spl_cat, 60, 0, 15, 300),
+    ]
+
+    for wh, cat, on_hand, reserved, min_t, max_t in stock_configs:
+        stock = db.query(WarehouseStock).filter(
+            WarehouseStock.warehouse_id == wh.id,
+            WarehouseStock.catalog_id == cat.id
+        ).first()
+        if not stock:
+            stock = WarehouseStock(
+                warehouse_id=wh.id,
+                catalog_id=cat.id,
+                quantity_on_hand=on_hand,
+                quantity_reserved=reserved,
+                min_threshold=min_t,
+                max_threshold=max_t
+            )
+            db.add(stock)
+
+    # 4. Seed 6 Serialized Devices per market for instant testing
+    for i in range(1, 7):
+        sn_mum = f"HWTC-MUM-{1000 + i}"
+        mac_mum = f"70:79:90:AA:11:{i:02d}"
+        if not db.query(InventoryDevice).filter(InventoryDevice.serial_number == sn_mum).first():
+            dev = InventoryDevice(
+                serial_number=sn_mum,
+                mac_address=mac_mum,
+                catalog_id=hua_cat.id,
+                warehouse_id=mum_wh.id,
+                market_id="mumbai",
+                status="IN_STOCK",
+                notes="Initial warehouse inventory baseline"
+            )
+            db.add(dev)
+
+        sn_kol = f"NOK-KOL-{2000 + i}"
+        mac_kol = f"A4:2B:B0:BB:22:{i:02d}"
+        if not db.query(InventoryDevice).filter(InventoryDevice.serial_number == sn_kol).first():
+            dev = InventoryDevice(
+                serial_number=sn_kol,
+                mac_address=mac_kol,
+                catalog_id=nok_cat.id,
+                warehouse_id=kol_wh.id,
+                market_id="kolkata",
+                status="IN_STOCK",
+                notes="Initial warehouse inventory baseline"
+            )
+            db.add(dev)
+
+    # 5. Initial Movement Log
+    if not db.query(StockMovement).first():
+        mov = StockMovement(
+            movement_code="MOV-INIT-MUM-001",
+            movement_type="RECEIPT",
+            catalog_id=hua_cat.id,
+            to_warehouse_id=mum_wh.id,
+            quantity=45,
+            reference_type="SYSTEM_BASELINE",
+            reference_id="INIT-SEED-2026",
+            notes="Initial warehouse stocking baseline",
+            actor_name="System Provisioner"
+        )
+        db.add(mov)
+
+    db.commit()
+    print("[SUCCESS] Carrier Inventory & Asset Management baseline seeded!")
+
+
+def seed_voucher_campaigns(db):
+    from decimal import Decimal
+    import uuid
+    from app.models_voucher import Voucher, VoucherStatus, VoucherDefinitionType
+
+    print("Seeding Promotional & Retention Voucher Campaigns...")
+    vouchers_data = [
+        {
+            "voucher_code": "WELCOME100",
+            "campaign_name": "New Subscriber Welcome Concession",
+            "description": "Flat ₹100 goodwill courtesy bill discount on first invoice",
+            "voucher_type": VoucherDefinitionType.BILL_DISCOUNT,
+            "discount_amount": Decimal("100.00"),
+            "discount_percent": Decimal("0.00"),
+            "max_redemptions": 1000,
+            "per_customer_limit": 1,
+            "valid_from": datetime(2026, 1, 1),
+            "valid_until": datetime(2026, 12, 31, 23, 59, 59),
+            "market_id": "ALL",
+            "status": VoucherStatus.ACTIVE
+        },
+        {
+            "voucher_code": "FIBER50",
+            "campaign_name": "Gigabit Fiber Adoption Perk",
+            "description": "Flat ₹50 bill credit on monthly high-speed broadband recharges",
+            "voucher_type": VoucherDefinitionType.BILL_DISCOUNT,
+            "discount_amount": Decimal("50.00"),
+            "discount_percent": Decimal("0.00"),
+            "max_redemptions": 500,
+            "per_customer_limit": 2,
+            "valid_from": datetime(2026, 1, 1),
+            "valid_until": datetime(2026, 12, 31, 23, 59, 59),
+            "market_id": "ALL",
+            "status": VoucherStatus.ACTIVE
+        },
+        {
+            "voucher_code": "RETENTION20",
+            "campaign_name": "At-Risk Subscriber Retention Campaign",
+            "description": "20% percentage discount up to ₹300 for loyal broadband subscribers",
+            "voucher_type": VoucherDefinitionType.PERCENT_DISCOUNT,
+            "discount_amount": Decimal("0.00"),
+            "discount_percent": Decimal("20.00"),
+            "max_discount_cap": Decimal("300.00"),
+            "min_invoice_amount": Decimal("499.00"),
+            "max_redemptions": 250,
+            "per_customer_limit": 1,
+            "valid_from": datetime(2026, 1, 1),
+            "valid_until": datetime(2026, 12, 31, 23, 59, 59),
+            "market_id": "ALL",
+            "status": VoucherStatus.ACTIVE
+        },
+        {
+            "voucher_code": "BOOST14D",
+            "campaign_name": "Speed Boost 14-Day Trial",
+            "description": "Complimentary +50 Mbps bandwidth upgrade for 14 calendar days",
+            "voucher_type": VoucherDefinitionType.SPEED_BOOST,
+            "discount_amount": Decimal("0.00"),
+            "discount_percent": Decimal("0.00"),
+            "benefit_payload": {"speed_increase_mbps": 50, "duration_days": 14},
+            "max_redemptions": 500,
+            "per_customer_limit": 1,
+            "valid_from": datetime(2026, 1, 1),
+            "valid_until": datetime(2026, 12, 31, 23, 59, 59),
+            "market_id": "ALL",
+            "status": VoucherStatus.ACTIVE
+        }
+    ]
+
+    for item in vouchers_data:
+        existing = db.query(Voucher).filter(Voucher.voucher_code == item["voucher_code"]).first()
+        if not existing:
+            v = Voucher(
+                id=uuid.uuid4(),
+                **item
+            )
+            db.add(v)
+
+    db.commit()
+    print("[SUCCESS] Voucher campaigns seeded!")

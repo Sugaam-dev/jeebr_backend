@@ -655,20 +655,41 @@ class RecommendRevenueRequest(BaseModel):
 # Governance & Audit Schemas
 class RecommendationResponse(BaseModel):
     id: int
+    recommendation_code: Optional[str] = None
+    market_id: Optional[str] = "mumbai"
     source_module: str
+    source_alarm_id: Optional[int] = None
+    source_alarm_code: Optional[str] = None
+    incident_type: Optional[str] = None
     target_entity_type: str
     target_entity_id: int
     target_entity_label: str
     title: str
     description: str
     recommended_action: str
+    proposed_action: Optional[str] = None
     action_payload: Any = None
     confidence_score: float
+    confidence_basis: Optional[str] = None
+    risk_level: Optional[str] = "MEDIUM"
+    evidence: Optional[Any] = None
+    impact_assessment: Optional[Any] = None
+    ai_provider: Optional[str] = "DETERMINISTIC_RULES_ENGINE_FALLBACK"
+    is_ai_generated: Optional[bool] = False
     status: str
     created_at: datetime
+    expires_at: Optional[datetime] = None
     reviewed_by_id: Optional[int] = None
     reviewed_at: Optional[datetime] = None
     review_notes: Optional[str] = None
+    rejection_reason: Optional[str] = None
+    action_fingerprint: Optional[str] = None
+    executed_by_id: Optional[int] = None
+    executed_at: Optional[datetime] = None
+    execution_status: Optional[str] = None
+    execution_result: Optional[Any] = None
+    execution_idempotency_key: Optional[str] = None
+    retry_count: Optional[int] = 0
 
     class Config:
         from_attributes = True
@@ -676,9 +697,22 @@ class RecommendationResponse(BaseModel):
 class ApproveRejectRequest(BaseModel):
     recommendation_id: int
     notes: Optional[str] = None
+    auto_execute: Optional[bool] = False
+
+class ExecuteRecommendationRequest(BaseModel):
+    recommendation_id: int
+    idempotency_key: Optional[str] = None
+
+class GenerateRecommendationRequest(BaseModel):
+    incident_type: str  # FIBER_CUT, OPTICAL_DEGRADE, PEAK_TRAFFIC, TICKET_OUTAGE
+    target_type: str    # LINK, DEVICE, PORT, TICKET
+    target_id: str
+    alarm_id: Optional[int] = None
+    market_id: Optional[str] = None
 
 class AuditLogResponse(BaseModel):
     id: int
+    market_id: Optional[str] = "mumbai"
     recommendation_id: Optional[int]
     source_module: str
     action_taken: str
@@ -1239,6 +1273,8 @@ class ServiceActivationOrderResponse(BaseModel):
     cancellation_reason: Optional[str] = None
     created_at: datetime
     updated_at: datetime
+    billing_account_number: Optional[str] = None
+    billing_subscription_code: Optional[str] = None
     logs: Optional[List[ProvisioningLogResponse]] = []
 
     class Config:
@@ -1637,3 +1673,121 @@ class CustomerBillingSummaryResponse(BaseModel):
     recent_payments: List[PaymentResponse] = []
     total_outstanding: float = 0.0
     account_balance: float = 0.0
+
+
+# ─── SentinelOS Background Billing Scheduler & Notification Schemas ───────────
+
+class BillingJobRunResponse(BaseModel):
+    id: str
+    job_type: str
+    market_id: Optional[str] = None
+    status: str
+    attempt_count: int
+    start_time: datetime
+    finish_time: Optional[datetime] = None
+    duration_seconds: Optional[float] = None
+    records_processed: int = 0
+    records_succeeded: int = 0
+    records_failed: int = 0
+    records_skipped: int = 0
+    error_details: Optional[str] = None
+    summary_metadata: Optional[Dict[str, Any]] = None
+    created_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+class BillingJobRunsListResponse(BaseModel):
+    items: List[BillingJobRunResponse]
+    total: int
+    page: int
+    page_size: int
+    pages: int
+
+
+class ScheduledJobDescriptor(BaseModel):
+    job_type: str
+    name: str
+    description: str
+    cadence: str
+    next_run_estimated: Optional[str] = None
+    is_locked: bool = False
+    lock_info: Optional[Dict[str, Any]] = None
+    last_run: Optional[BillingJobRunResponse] = None
+    allowed_roles: List[str] = ["Admin", "SUPER_ADMIN", "Revenue"]
+
+
+class JobRunManualRequest(BaseModel):
+    market_id: Optional[str] = None
+
+
+class JobReconciliationRequest(BaseModel):
+    action: str = "RECONCILE"  # "RECONCILE" or "RETRY"
+    reason: Optional[str] = "Manual operator reconciliation"
+
+
+class NotificationOutboxItemResponse(BaseModel):
+    id: str
+    market_id: str
+    customer_id: Optional[int] = None
+    recipient_masked: str
+    channel: str
+    event_type: str
+    message_preview: str
+    status: str
+    attempt_count: int
+    max_attempts: int
+    last_error_sanitized: Optional[str] = None
+    idempotency_key: str
+    is_simulated: bool
+    scheduled_at: datetime
+    sent_at: Optional[datetime] = None
+    created_at: datetime
+
+
+class NotificationOutboxListResponse(BaseModel):
+    items: List[NotificationOutboxItemResponse]
+    total: int
+    page: int
+    page_size: int
+    pages: int
+    summary_by_status: Dict[str, int] = {}
+
+
+class SchedulerOverviewResponse(BaseModel):
+    total_runs: int
+    successful_runs: int
+    failed_runs: int
+    running_jobs: int
+    last_completed_at: Optional[datetime] = None
+    active_locks: int = 0
+    outbox_queued: int = 0
+    outbox_failed: int = 0
+    outbox_sent: int = 0
+    jobs: List[ScheduledJobDescriptor] = []
+    runner: Optional[Dict[str, Any]] = None
+
+
+class SchedulerRunnerStatusResponse(BaseModel):
+    runner_enabled: bool
+    is_running: bool
+    is_leader: bool
+    runner_id: str
+    timezone: str
+    started_at: Optional[str] = None
+    last_heartbeat: Optional[str] = None
+    coordination_backend: str
+    active_jobs_count: int
+    schedules: List[Dict[str, Any]] = []
+    recent_errors: List[Dict[str, Any]] = []
+
+
+class SchedulerRunnerToggleRequest(BaseModel):
+    enabled: bool
+
+
+# SentinelOS Carrier Inventory & Asset Management Schemas
+from app.schemas_inventory import *
+from app.schemas_tariff import *
+from app.schemas_voucher import *

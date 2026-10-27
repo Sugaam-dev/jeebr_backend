@@ -1,15 +1,36 @@
+from contextlib import asynccontextmanager
 import logging
 from fastapi import FastAPI, Request, Response, status
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from app.config import settings
-from app.database import engine, Base
+import app.database as app_db
+engine = app_db.engine
+Base = app_db.Base
 from app.routers import (
-    auth, customers, assurance, churn, journeys, orchestration, revenue, governance, cockpit, pilot_bundle, ticketing, field_operations, olt_telemetry, rbac, network, provisioning, finance
+    auth, customers, assurance, churn, journeys, orchestration, revenue, governance, cockpit, pilot_bundle, ticketing, field_operations, olt_telemetry, rbac, network, provisioning, finance, inventory, tariffs, vouchers
 )
 from app import markets
 
 logger = logging.getLogger(__name__)
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Startup: Start background scheduler runner if enabled
+    if getattr(settings, "SCHEDULER_ENABLED", True):
+        from app.services.billing_scheduler_runner import scheduler_runner
+        try:
+            await scheduler_runner.start()
+        except Exception as e:
+            logger.error(f"Failed to start scheduler runner during app startup: {e}")
+    yield
+    # Shutdown: Cleanly stop background scheduler runner
+    if getattr(settings, "SCHEDULER_ENABLED", True):
+        from app.services.billing_scheduler_runner import scheduler_runner
+        try:
+            await scheduler_runner.stop()
+        except Exception as e:
+            logger.error(f"Failed to stop scheduler runner during app shutdown: {e}")
 
 def check_schema_compatibility(db_engine):
     """
@@ -41,7 +62,8 @@ app = FastAPI(
     version="1.0.0",
     docs_url="/docs",
     redoc_url="/redoc",
-    openapi_url=f"{settings.API_V1_STR}/openapi.json"
+    openapi_url=f"{settings.API_V1_STR}/openapi.json",
+    lifespan=lifespan
 )
 
 # CORS Middleware - Explicit allowlist + dynamic Vercel wildcard regex
@@ -130,6 +152,9 @@ app.include_router(rbac.router, prefix=settings.API_V1_STR)
 app.include_router(network.router, prefix=settings.API_V1_STR)
 app.include_router(provisioning.router, prefix=settings.API_V1_STR)
 app.include_router(finance.router, prefix=settings.API_V1_STR)
+app.include_router(inventory.router, prefix=settings.API_V1_STR)
+app.include_router(tariffs.router, prefix=settings.API_V1_STR)
+app.include_router(vouchers.router, prefix=settings.API_V1_STR)
 
 @app.on_event("startup")
 def on_startup():
@@ -160,7 +185,7 @@ def check_database_connectivity(timeout_seconds: float = 2.0):
     try:
         t0 = time.time()
         with engine.connect() as conn:
-            if engine.dialect.name == "postgresql":
+            if getattr(getattr(engine, "dialect", None), "name", None) == "postgresql":
                 conn.execute(text(f"SET statement_timeout = {int(timeout_seconds * 1000)};"))
             row = conn.execute(text("SELECT 1;")).scalar()
             if row == 1:

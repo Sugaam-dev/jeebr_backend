@@ -42,6 +42,8 @@ from app.models_crm import (
 
 TEST_DB_PATH = "test_stage2_crm.db"
 TEST_DB_URL = f"sqlite:///./{TEST_DB_PATH}"
+ALEMBIC_INI_PATH = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "alembic.ini"))
+ALEMBIC_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "alembic"))
 
 @pytest.fixture(scope="module")
 def isolated_db_engine():
@@ -70,7 +72,8 @@ def isolated_db_engine():
     Base.metadata.create_all(bind=engine, tables=pre_crm_tables)
 
     # Configure Alembic to point to isolated test database
-    alembic_cfg = Config("alembic.ini")
+    alembic_cfg = Config(ALEMBIC_INI_PATH)
+    alembic_cfg.set_main_option("script_location", ALEMBIC_DIR)
     alembic_cfg.set_main_option("sqlalchemy.url", TEST_DB_URL)
 
     # Stamp database at the pre-CRM baseline revision (f6a7b8c9d0e1)
@@ -343,7 +346,8 @@ def test_postgresql_dialect_offline_ddl_generation():
     import io
     import sys
 
-    pg_cfg = Config("alembic.ini")
+    pg_cfg = Config(ALEMBIC_INI_PATH)
+    pg_cfg.set_main_option("script_location", ALEMBIC_DIR)
     mock_pg_url = "postgresql://mock_user:mock_pass@localhost:5432/mock_db"
     pg_cfg.set_main_option("sqlalchemy.url", mock_pg_url)
 

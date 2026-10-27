@@ -171,15 +171,17 @@ def test_olt_api_unauthorized_and_viewer_restrictions():
 # --- 3. Security Hardening Tests (Demo Login, Customer Linkage, Geolocation) ---
 
 def test_demo_login_disabled_in_production(monkeypatch):
-    """Verify demo-login backdoor is strictly blocked when ENVIRONMENT=production (Rule 30)."""
-    # 1. Under production environment: returns 403 Forbidden
+    """Verify demo-login backdoor is strictly blocked when ENVIRONMENT=production (Gate 1)."""
+    # 1. Under production environment: returns 404 Not Found (non-disclosing denial)
     monkeypatch.setattr(settings, "ENVIRONMENT", "production")
+    monkeypatch.setattr(settings, "ENABLE_DEMO_LOGIN", True)
     prod_res = client.post("/api/auth/demo-login/Admin")
-    assert prod_res.status_code == 403
-    assert "strictly disabled in production" in prod_res.json()["detail"]
+    assert prod_res.status_code == 404
+    assert prod_res.json()["detail"] == "Not Found"
 
-    # 2. Under development environment: allowed for testing
+    # 2. Under development environment with explicit opt-in: allowed for testing
     monkeypatch.setattr(settings, "ENVIRONMENT", "development")
+    monkeypatch.setattr(settings, "ENABLE_DEMO_LOGIN", True)
     dev_res = client.post("/api/auth/demo-login/Admin")
     assert dev_res.status_code == 200
     assert "access_token" in dev_res.json()

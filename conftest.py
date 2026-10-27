@@ -27,24 +27,28 @@ assert_safe_test_db(TEST_DATABASE_URL)
 os.environ["ENVIRONMENT"] = "testing"
 os.environ["PREVENT_REMOTE_MIGRATIONS"] = "1"
 os.environ["DATABASE_URL"] = TEST_DATABASE_URL
+os.environ["ENABLE_DEMO_LOGIN"] = "true"
 
 from app.config import settings
 settings.ENVIRONMENT = "testing"
 settings.DATABASE_URL = TEST_DATABASE_URL
+settings.ENABLE_DEMO_LOGIN = True
 
 import app.database as app_db
 import app.seed as app_seed
+import app.main as app_main
 from app.main import app as fastapi_app
 
 # 4. Create isolated SQLite engine and session factory
 test_engine = create_engine(TEST_DATABASE_URL, connect_args={"check_same_thread": False})
 TestingSessionLocal = sessionmaker(autocommit=False, autoflush=False, expire_on_commit=False, bind=test_engine)
 
-# 5. Patch app.database and app.seed to use isolated engine/session
+# 5. Patch app.database, app.seed, and app.main to use isolated engine/session
 app_db.engine = test_engine
 app_db.SessionLocal = TestingSessionLocal
 app_seed.engine = test_engine
 app_seed.SessionLocal = TestingSessionLocal
+app_main.engine = test_engine
 
 def override_get_db():
     db = TestingSessionLocal()
@@ -97,6 +101,7 @@ def setup_test_database():
     app_db.SessionLocal = TestingSessionLocal
     app_seed.engine = test_engine
     app_seed.SessionLocal = TestingSessionLocal
+    app_main.engine = test_engine
     
     yield
     

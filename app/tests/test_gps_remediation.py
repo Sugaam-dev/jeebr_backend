@@ -194,6 +194,14 @@ def test_mock_protection_production_environment(monkeypatch):
     # Set environment to production
     monkeypatch.setattr(settings, "ENVIRONMENT", "production")
 
+    # Bypass Redis rate limiter failure in offline test environment
+    async def _mock_is_throttled(*args, **kwargs):
+        return False, 0.0
+    async def _mock_record_accepted_ping(*args, **kwargs):
+        pass
+    monkeypatch.setattr(location_rate_limiter, "is_throttled", _mock_is_throttled)
+    monkeypatch.setattr(location_rate_limiter, "record_accepted_ping", _mock_record_accepted_ping)
+
     # 1. Mock ping in production -> 403 Forbidden
     res_mock = client.post(
         f"/api/field-operations/jobs/{job_id}/ping",

@@ -1,3 +1,5 @@
+import logging
+logger = logging.getLogger(__name__)
 """
 app/services/provisioning_service.py
 
@@ -22,6 +24,7 @@ from app.services.provisioning_catalog import get_service_plan_by_id, CANONICAL_
 from app.services.provisioning_provider import (
     get_provisioning_provider, ProvisioningExecutionResult
 )
+from app.services.billing_service import initialize_billing_for_order
 
 
 def validate_customer_eligibility(
@@ -265,6 +268,17 @@ def create_activation_order(
         timestamp=datetime.utcnow()
     )
     db.add(log)
+    db.flush()
+    try:
+        from app.services import inventory_service
+        inventory_service.reserve_equipment_for_order(
+            db=db,
+            order=order,
+            serial_number=payload.get("serial_number"),
+            actor=current_user
+        )
+    except Exception as exc:
+        logger.warning("Optional inventory equipment reservation skipped: %s", exc)
     db.commit()
     db.refresh(order)
     return order
@@ -369,6 +383,17 @@ def execute_provisioning(
         order.failure_code = None
         order.failure_reason = None
 
+        # Consume and mark installed in inventory
+        try:
+            from app.services import inventory_service
+            inventory_service.consume_and_install_device_for_order(
+                db=db,
+                order=order,
+                actor=current_user
+            )
+        except Exception as exc:
+            logger.warning("Optional inventory equipment consumption skipped: %s", exc)
+
         # Synchronize operational customer record
         cust = db.query(Customer).filter(Customer.id == order.customer_id).first()
         if cust:
@@ -386,7 +411,59 @@ def execute_provisioning(
                     db.add(ont)
             db.add(cust)
 
-        # Log completion
+        # Safely and idempotently initialize subscriber billing account and subscription
+        try:
+            billing_account, billing_sub = initialize_billing_for_order(
+                order=order,
+                db=db,
+                actor=current_user,
+                auto_commit=False
+            )
+            billing_details = {
+                "billing_account_number": billing_account.account_number,
+                "billing_subscription_code": billing_sub.subscription_code,
+                "billing_type": billing_sub.billing_type,
+                "next_billing_date": billing_sub.next_billing_date.isoformat() if billing_sub.next_billing_date else None,
+            }
+        except Exception as exc:
+            db.rollback()
+            order.status = ProvisioningStatus.FAILED
+            order.failure_code = "BILLING_INITIALIZATION_ERROR"
+            order.failure_reason = f"Network provisioning completed but billing initialization failed: {str(exc)}"
+            order.retry_count += 1
+            order.updated_at = datetime.utcnow()
+
+            log_fail = ProvisioningLog(
+                order_id=order.id,
+                market_id=order.market_id,
+                from_status=ProvisioningStatus.PROVISIONING,
+                to_status=ProvisioningStatus.FAILED,
+                action="PROVISION_FAILURE",
+                actor_id=current_user.id,
+                actor_email=current_user.email,
+                actor_role=current_user.role,
+                message=f"Billing initialization failed: {str(exc)}",
+                execution_mode=order.execution_mode,
+                details={"error": str(exc), "failure_code": "BILLING_INITIALIZATION_ERROR"},
+                timestamp=datetime.utcnow()
+            )
+            db.add(log_fail)
+            db.commit()
+            db.refresh(order)
+            return order, ProvisioningExecutionResult(
+                success=False,
+                status=ProvisioningStatus.FAILED,
+                execution_mode=order.execution_mode,
+                provider_name=order.provider_name,
+                steps=res.steps if res else [],
+                failure_code="BILLING_INITIALIZATION_ERROR",
+                failure_reason=str(exc)
+            )
+
+        # Log completion with billing metadata
+        log_payload = res.to_dict()
+        log_payload.update(billing_details)
+
         log_end = ProvisioningLog(
             order_id=order.id,
             market_id=order.market_id,
@@ -396,9 +473,9 @@ def execute_provisioning(
             actor_id=current_user.id,
             actor_email=current_user.email,
             actor_role=current_user.role,
-            message="Broadband service provisioned successfully across OLT, BNG, and ONT.",
+            message="Broadband service provisioned successfully; billing account and subscription initialized.",
             execution_mode=order.execution_mode,
-            details=res.to_dict(),
+            details=log_payload,
             timestamp=datetime.utcnow()
         )
         db.add(log_end)
@@ -501,6 +578,15 @@ def cancel_activation_order(
         details=res.to_dict(),
         timestamp=datetime.utcnow()
     )
+    try:
+        from app.services import inventory_service
+        inventory_service.release_reservation_for_order(
+            db=db,
+            order=order,
+            actor=current_user
+        )
+    except Exception as exc:
+        logger.warning("Optional inventory equipment release skipped: %s", exc)
     db.add(log)
     db.commit()
     db.refresh(order)
@@ -529,6 +615,23 @@ def reconcile_activation_order(
         order.failure_reason = None
         order.updated_at = datetime.utcnow()
 
+        try:
+            billing_account, billing_sub = initialize_billing_for_order(
+                order=order,
+                db=db,
+                actor=current_user,
+                auto_commit=False
+            )
+            reconcile_billing_details = {
+                "billing_account_number": billing_account.account_number,
+                "billing_subscription_code": billing_sub.subscription_code,
+            }
+        except Exception:
+            reconcile_billing_details = {}
+
+        reconcile_payload = res.to_dict()
+        reconcile_payload.update(reconcile_billing_details)
+
         log = ProvisioningLog(
             order_id=order.id,
             market_id=order.market_id,
@@ -538,9 +641,9 @@ def reconcile_activation_order(
             actor_id=current_user.id,
             actor_email=current_user.email,
             actor_role=current_user.role,
-            message="Reconciliation self-healed order to ACTIVE based on downstream hardware telemetry.",
+            message="Reconciliation self-healed order to ACTIVE and ensured billing subscription initialization.",
             execution_mode=order.execution_mode,
-            details=res.to_dict(),
+            details=reconcile_payload,
             timestamp=datetime.utcnow()
         )
         db.add(log)

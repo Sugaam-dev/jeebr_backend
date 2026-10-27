@@ -18,7 +18,7 @@ from datetime import datetime
 from decimal import Decimal
 from typing import Optional, List
 from sqlalchemy import (
-    Column, Integer, String, Boolean, DateTime, ForeignKey, Text, JSON, Index, Numeric, CheckConstraint
+    Column, Integer, String, Boolean, DateTime, ForeignKey, Text, JSON, Index, Numeric, CheckConstraint, text
 )
 from sqlalchemy.orm import relationship
 from app.database import Base
@@ -86,7 +86,8 @@ class VoucherType:
     DATA_TOPUP = "DATA_TOPUP"
     BILL_DISCOUNT = "BILL_DISCOUNT"
     OTT_PASS = "OTT_PASS"
-    ALL = (SPEED_BOOST, DATA_TOPUP, BILL_DISCOUNT, OTT_PASS)
+    PERCENT_DISCOUNT = "PERCENT_DISCOUNT"
+    ALL = (SPEED_BOOST, DATA_TOPUP, BILL_DISCOUNT, OTT_PASS, PERCENT_DISCOUNT)
 
 
 class VoucherRedemptionStatus:
@@ -201,13 +202,20 @@ class BillingSubscription(Base):
     # Relationships
     billing_account = relationship('BillingAccount', back_populates='subscriptions')
     customer = relationship('Customer')
-    provisioning_order = relationship('ServiceActivationOrder')
+    provisioning_order = relationship('ServiceActivationOrder', back_populates='billing_subscription')
     line_items = relationship('InvoiceLineItem', back_populates='subscription')
 
     __table_args__ = (
         CheckConstraint(f"status IN {SubscriptionStatus.ALL}", name="ck_billing_subscription_status"),
         CheckConstraint(f"billing_type IN {BillingType.ALL}", name="ck_billing_subscription_type"),
         Index("ix_billing_subscriptions_market_status", "market_id", "status"),
+        Index(
+            "ix_billing_subscriptions_provisioning_order_id",
+            "provisioning_order_id",
+            unique=True,
+            sqlite_where=text("provisioning_order_id IS NOT NULL"),
+            postgresql_where=text("provisioning_order_id IS NOT NULL")
+        ),
     )
 
 
@@ -443,6 +451,7 @@ class VoucherRedemption(Base):
     financial_credit_amount = Column(Numeric(12, 2), default=Decimal('0.00'), nullable=False)
 
     # Fulfillment linkages
+    voucher_id = Column(GUID(), ForeignKey('vouchers.id', ondelete='SET NULL'), nullable=True, index=True)
     invoice_id = Column(Integer, ForeignKey('invoices.id', ondelete='SET NULL'), nullable=True)
     provisioning_order_id = Column(Integer, ForeignKey('service_provisioning_orders.id', ondelete='SET NULL'), nullable=True)
 

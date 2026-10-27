@@ -13,6 +13,7 @@ from typing import Dict, List, Optional, Any
 from datetime import datetime, timedelta
 import math
 from sqlalchemy.orm import Session
+from sqlalchemy.exc import IntegrityError
 from app.models import (
     NetworkDevice, OLTPort, NetworkAlarm, DeviceMetricThreshold,
     DeviceMetricRecord, User
@@ -312,39 +313,55 @@ class SyntheticMonitoringProvider(MonitoringProvider):
         Does NOT flood duplicate alarms on repeated calls.
         """
         full_code = f"ALM-MON-{dev.id}-{alarm_code_base}"
-        existing = db.query(NetworkAlarm).filter(
-            NetworkAlarm.device_id == dev.id,
-            NetworkAlarm.alarm_code == full_code
-        ).first()
+        try:
+            existing = db.query(NetworkAlarm).filter(
+                NetworkAlarm.alarm_code == full_code
+            ).first()
 
-        if severity:
-            if existing:
-                # Reactivate / update severity and last_seen without creating duplicate
+            if severity:
+                if existing:
+                    # Reactivate / update severity and last_seen without creating duplicate
+                    existing.status = "ACTIVE"
+                    existing.severity = severity
+                    existing.last_seen_at = datetime.utcnow()
+                    existing.cleared_at = None
+                    existing.message = message
+                else:
+                    new_alarm = NetworkAlarm(
+                        alarm_code=full_code,
+                        market_id=dev.market_id,
+                        device_id=dev.id,
+                        severity=severity,
+                        code=code,
+                        message=message,
+                        status="ACTIVE",
+                        first_seen_at=datetime.utcnow(),
+                        last_seen_at=datetime.utcnow()
+                    )
+                    db.add(new_alarm)
+                db.commit()
+            else:
+                # Recovery: metric back to normal
+                if existing and existing.status == "ACTIVE":
+                    existing.status = "CLEARED"
+                    existing.cleared_at = datetime.utcnow()
+                    db.commit()
+        except IntegrityError:
+            db.rollback()
+            # Handle race condition from concurrent GET requests
+            existing = db.query(NetworkAlarm).filter(
+                NetworkAlarm.alarm_code == full_code
+            ).first()
+            if existing and severity:
                 existing.status = "ACTIVE"
                 existing.severity = severity
                 existing.last_seen_at = datetime.utcnow()
                 existing.cleared_at = None
                 existing.message = message
-            else:
-                new_alarm = NetworkAlarm(
-                    alarm_code=full_code,
-                    market_id=dev.market_id,
-                    device_id=dev.id,
-                    severity=severity,
-                    code=code,
-                    message=message,
-                    status="ACTIVE",
-                    first_seen_at=datetime.utcnow(),
-                    last_seen_at=datetime.utcnow()
-                )
-                db.add(new_alarm)
-            db.commit()
-        else:
-            # Recovery: metric back to normal
-            if existing and existing.status == "ACTIVE":
-                existing.status = "CLEARED"
-                existing.cleared_at = datetime.utcnow()
-                db.commit()
+                try:
+                    db.commit()
+                except Exception:
+                    db.rollback()
 
     # ─── Health Classification Engine ───────────────────────────────────────
 

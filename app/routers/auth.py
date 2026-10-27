@@ -188,10 +188,11 @@ def logout(response: Response, current_user: User = Depends(get_current_user), d
 
 @router.post("/demo-login/{role}", response_model=Token)
 def demo_login(role: str, response: Response, db: Session = Depends(get_db)):
-    if settings.ENVIRONMENT.lower() in ("production", "prod"):
+    is_prod = settings.ENVIRONMENT.lower() in ("production", "prod")
+    if is_prod or not getattr(settings, "ENABLE_DEMO_LOGIN", False):
         raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Forbidden: Demo login endpoint is strictly disabled in production environments."
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Not Found"
         )
 
     valid_roles = ["SUPER_ADMIN", "Executive", "NOC", "Care", "Revenue", "Admin", "Field Engineer", "Customer", "Viewer"]

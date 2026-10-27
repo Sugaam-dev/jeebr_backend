@@ -30,6 +30,7 @@ from app.auth import require_roles
 from app.markets import get_current_market
 from app.services.network_provider import get_network_provider
 from app.services.monitoring_provider import get_monitoring_provider
+from app.services.scenario_engine import get_scenario_engine
 
 router = APIRouter(prefix="/network", tags=["Network Topology & Optical Health"])
 
@@ -469,4 +470,104 @@ def simulate_device_health_scenario(
                 detail=f"Forbidden: Device {device_id_or_code} belongs to another market."
             )
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+
+
+# ============================================================================
+# GATE 3: Multi-Hop Synthetic Network Fault Scenario Endpoints
+# ============================================================================
+
+class ScenarioTriggerRequest(BaseModel):
+    scenario_type: str = Field(..., description="FIBER_CUT, OPTICAL_DEGRADE, PEAK_TRAFFIC, RECOVERY")
+    target_type: str = Field(..., description="LINK, DEVICE, PORT")
+    target_id: str = Field(..., description="Target identifier: link ID, device code/ID, or port ID")
+    severity: Optional[str] = Field("CRITICAL", description="CRITICAL, WARNING, or DEGRADED")
+    parameters: Optional[Dict[str, Any]] = Field(default_factory=dict, description="Custom parameters: seed, rx_dbm, utilization_pct")
+    idempotency_key: Optional[str] = Field(None, description="Optional idempotency key")
+
+
+class ScenarioRecoveryRequest(BaseModel):
+    scenario_id: Optional[str] = Field(None, description="Specific scenario ID to recover")
+    target_type: Optional[str] = Field(None, description="LINK, DEVICE, PORT")
+    target_id: Optional[str] = Field(None, description="Specific target ID to recover")
+
+
+@router.post("/scenarios/trigger")
+def trigger_network_scenario(
+    req: ScenarioTriggerRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_roles(OPERATIONAL_ROLES)),
+    market: str = Depends(get_current_market)
+) -> Dict[str, Any]:
+    """
+    Trigger a deterministic synthetic network fault scenario (FIBER_CUT, OPTICAL_DEGRADE, PEAK_TRAFFIC, RECOVERY).
+    Restricted to OPERATIONAL_ROLES (SUPER_ADMIN, Admin, NOC).
+    Enforces strict regional market boundary isolation.
+    """
+    engine = get_scenario_engine()
+    try:
+        return engine.trigger_scenario(
+            db=db,
+            scenario_type=req.scenario_type,
+            target_type=req.target_type,
+            target_id=req.target_id,
+            market_id=market,
+            severity=req.severity or "CRITICAL",
+            parameters=req.parameters or {},
+            actor=current_user,
+            idempotency_key=req.idempotency_key
+        )
+    except PermissionError as e:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(e))
+    except ValueError as e:
+        msg = str(e)
+        if "not found" in msg.lower():
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=msg)
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=msg)
+
+
+@router.get("/scenarios/active")
+def list_active_scenarios(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_roles(OPERATIONAL_ROLES)),
+    market: str = Depends(get_current_market)
+) -> List[Dict[str, Any]]:
+    """
+    List currently active synthetic fault scenarios within caller's authorized market.
+    """
+    engine = get_scenario_engine()
+    return engine.get_active_scenarios(db=db, market_id=market)
+
+
+@router.post("/scenarios/recover")
+def recover_network_scenario(
+    req: Optional[ScenarioRecoveryRequest] = None,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_roles(OPERATIONAL_ROLES)),
+    market: str = Depends(get_current_market)
+) -> Dict[str, Any]:
+    """
+    Recover synthetic fault scenarios and restore baseline nominal health.
+    Resolves active alarms and preserves historical records.
+    """
+    engine = get_scenario_engine()
+    s_id = req.scenario_id if req else None
+    t_type = req.target_type if req else None
+    t_id = req.target_id if req else None
+
+    try:
+        return engine.recover_scenario(
+            db=db,
+            scenario_id=s_id,
+            target_type=t_type,
+            target_id=t_id,
+            market_id=market,
+            actor=current_user
+        )
+    except PermissionError as e:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(e))
+    except ValueError as e:
+        msg = str(e)
+        if "not found" in msg.lower():
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=msg)
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=msg)
 

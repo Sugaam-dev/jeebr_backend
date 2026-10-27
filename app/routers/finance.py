@@ -19,11 +19,11 @@ from sqlalchemy.orm import Session
 from sqlalchemy import or_
 
 from app.database import get_db
-from app.models import User, Customer, Invoice
+from app.models import User, Customer, Invoice, AuditLog
 from app.models_finance import (
     BillingAccount, BillingSubscription, Payment, CreditNote,
     RefundRecord, JournalEntry, VoucherRedemption, BillingAccountStatus,
-    SubscriptionStatus, InvoiceStatus, PaymentStatus
+    SubscriptionStatus, InvoiceStatus, PaymentStatus, BillingJobRun, NotificationOutbox
 )
 from app.schemas import (
     BillingAccountResponse, BillingAccountCreateRequest,
@@ -36,7 +36,11 @@ from app.schemas import (
     RefundRecordResponse, RefundCreateRequest,
     JournalEntryResponse, LedgerBalanceResponse,
     VoucherRedeemRequest, VoucherRedemptionResponse,
-    FinanceOverviewResponse, BillingRunJobResponse, GatewayStatusResponse
+    FinanceOverviewResponse, BillingRunJobResponse, GatewayStatusResponse,
+    BillingJobRunResponse, BillingJobRunsListResponse, ScheduledJobDescriptor,
+    JobRunManualRequest, JobReconciliationRequest,
+    NotificationOutboxItemResponse, NotificationOutboxListResponse, SchedulerOverviewResponse,
+    SchedulerRunnerStatusResponse, SchedulerRunnerToggleRequest
 )
 from app.auth import get_current_user, require_roles
 from app.markets import get_current_market, get_user_authorized_markets
@@ -53,6 +57,12 @@ from app.services.payment_provider import get_payment_gateway_status
 from app.services.voucher_service import (
     redeem_customer_voucher, get_customer_redemptions
 )
+from app.services.billing_scheduler import (
+    execute_durable_billing_job, get_scheduled_job_descriptors, get_job_runs,
+    get_job_run_detail, reconcile_job_run, get_notification_outbox_items,
+    get_scheduler_overview_kpis, ALLOWLISTED_JOBS, normalize_job_type
+)
+from app.services.notification_service import process_notification_outbox
 
 router = APIRouter(prefix="/finance", tags=["Finance & Billing Management"])
 
@@ -747,7 +757,7 @@ def list_voucher_redemptions(
     return results
 
 
-# ─── 9. Scheduled Background Jobs (Safe Manual Triggers) ──────────────────────
+# ─── 9. Scheduled Background Jobs & Operations Console ────────────────────────
 
 @router.post("/jobs/billing-run", response_model=BillingRunJobResponse)
 @router.post("/jobs/run-billing", response_model=BillingRunJobResponse)
@@ -771,6 +781,280 @@ def trigger_overdue_evaluation(
     """Evaluates overdue invoices, updates lifecycle status, and computes aging."""
     res = evaluate_overdue_and_dunning(db, market_id=market)
     return res
+
+
+@router.get("/scheduler/overview", response_model=SchedulerOverviewResponse)
+def get_scheduler_overview(
+    market_id: Optional[str] = Query(None, description="Optional market filter"),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_roles(["Admin", "SUPER_ADMIN", "Revenue", "Viewer", "Care"])),
+    current_market: str = Depends(get_current_market)
+):
+    """Aggregates scheduler health, active distributed locks, run statistics, and outbox KPIs."""
+    target_market = market_id or current_market
+    return get_scheduler_overview_kpis(db, market_id=target_market)
+
+
+@router.get("/scheduler/jobs", response_model=List[ScheduledJobDescriptor])
+def list_scheduled_jobs(
+    market_id: Optional[str] = Query(None, description="Optional market filter"),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_roles(["Admin", "SUPER_ADMIN", "Revenue", "Viewer", "Care"])),
+    current_market: str = Depends(get_current_market)
+):
+    """Returns catalog of known allowlisted jobs, active lock states, cadence, and last execution outcome."""
+    target_market = market_id or current_market
+    return get_scheduled_job_descriptors(db, market_id=target_market)
+
+
+@router.get("/scheduler/runner/status", response_model=SchedulerRunnerStatusResponse)
+def get_scheduler_runner_telemetry(
+    current_user: User = Depends(require_roles(["Admin", "SUPER_ADMIN", "Revenue", "Viewer", "Care"]))
+):
+    """Deep telemetry for automated background scheduler runner (leader, heartbeat, schedules)."""
+    from app.services.billing_scheduler_runner import scheduler_runner
+    return scheduler_runner.get_status()
+
+
+@router.post("/scheduler/runner/toggle")
+async def toggle_scheduler_runner_state(
+    payload: SchedulerRunnerToggleRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_roles(["Admin", "SUPER_ADMIN"]))
+):
+    """Enables or pauses the automated background scheduler daemon loop."""
+    from app.services.billing_scheduler_runner import scheduler_runner
+    if payload.enabled:
+        await scheduler_runner.start()
+        action = "START_SCHEDULER_RUNNER"
+    else:
+        await scheduler_runner.stop()
+        action = "PAUSE_SCHEDULER_RUNNER"
+
+    try:
+        audit = AuditLog(
+            market_id="mumbai",
+            source_module="BILLING_SCHEDULER",
+            action_taken=action,
+            decision="EXECUTED",
+            user_id=current_user.id,
+            user_name=current_user.email or "Admin",
+            user_role=current_user.role,
+            confidence_score=1.0,
+            original_signals={"requested_enabled": payload.enabled},
+            execution_result={"runner_enabled": payload.enabled}
+        )
+        db.add(audit)
+        db.commit()
+    except Exception as e:
+        logger.warning(f"Failed to record audit log for scheduler runner toggle: {e}")
+
+    return scheduler_runner.get_status()
+
+
+@router.get("/scheduler/runs", response_model=BillingJobRunsListResponse)
+def list_billing_job_runs(
+    job_type: Optional[str] = Query(None, description="Filter by job type"),
+    status_filter: Optional[str] = Query(None, alias="status", description="Filter by execution status"),
+    market_id: Optional[str] = Query(None, description="Filter by market ID"),
+    date_from: Optional[str] = Query(None, description="ISO format start date"),
+    date_to: Optional[str] = Query(None, description="ISO format end date"),
+    page: int = Query(1, ge=1, description="Page number"),
+    page_size: int = Query(20, ge=1, le=100, description="Items per page"),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_roles(["Admin", "SUPER_ADMIN", "Revenue", "Viewer", "Care"])),
+    current_market: str = Depends(get_current_market)
+):
+    """Paginated execution history of background billing and dunning job runs."""
+    d_from = None
+    d_to = None
+    if date_from:
+        try:
+            d_from = datetime.fromisoformat(date_from)
+        except Exception:
+            pass
+    if date_to:
+        try:
+            d_to = datetime.fromisoformat(date_to)
+        except Exception:
+            pass
+
+    target_market = market_id if market_id is not None else current_market
+    return get_job_runs(
+        db=db,
+        job_type=job_type,
+        status=status_filter,
+        market_id=target_market,
+        date_from=d_from,
+        date_to=d_to,
+        page=page,
+        page_size=page_size
+    )
+
+
+@router.get("/scheduler/runs/{run_id}", response_model=BillingJobRunResponse)
+def get_billing_job_run_detail(
+    run_id: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_roles(["Admin", "SUPER_ADMIN", "Revenue", "Viewer", "Care"]))
+):
+    """Retrieves deep execution details, durations, processed records, and execution metrics for a specific run."""
+    run = get_job_run_detail(db, run_id=run_id)
+    if not run:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Billing job run '{run_id}' not found."
+        )
+    return run
+
+
+@router.post("/scheduler/jobs/{job_type}/run")
+def run_scheduled_job_manually(
+    job_type: str,
+    payload: Optional[JobRunManualRequest] = None,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_roles(["Admin", "SUPER_ADMIN", "Revenue"])),
+    current_market: str = Depends(get_current_market)
+):
+    """
+    Manually triggers an allowlisted background job under distributed lock protection.
+    Enforces RBAC, market scoping, concurrency protection, and audit log recording.
+    """
+    canonical_type = normalize_job_type(job_type)
+    if canonical_type not in ALLOWLISTED_JOBS:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Job type '{job_type}' is not allowlisted for manual execution. Permitted: {', '.join(ALLOWLISTED_JOBS)}"
+        )
+
+    target_market = None
+    if payload and payload.market_id:
+        target_market = payload.market_id if payload.market_id != "all" else None
+    elif current_market and current_market != "all":
+        target_market = current_market
+
+    res = execute_durable_billing_job(
+        db=db,
+        job_type=canonical_type,
+        market_id=target_market,
+        initiated_by=f"MANUAL_{current_user.email}"
+    )
+
+    if res.get("status") == "SKIPPED":
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=res.get("reason", "Job execution skipped due to active concurrent lock.")
+        )
+
+    # Durable audit attribution
+    try:
+        audit = AuditLog(
+            market_id=target_market or "mumbai",
+            source_module="BILLING_SCHEDULER",
+            action_taken=f"TRIGGER_MANUAL_JOB_{canonical_type}",
+            decision="EXECUTED" if res.get("status") == "COMPLETED" else "FAILED",
+            user_id=current_user.id,
+            user_name=current_user.email or current_user.full_name or "Operator",
+            user_role=current_user.role,
+            confidence_score=1.0,
+            original_signals={"job_type": canonical_type, "market_id": target_market},
+            execution_result=res
+        )
+        db.add(audit)
+        db.commit()
+    except Exception as e:
+        logger.warning(f"Failed to record audit log for manual job execution: {e}")
+
+    return res
+
+
+@router.post("/scheduler/runs/{run_id}/reconcile")
+def reconcile_failed_or_stalled_run(
+    run_id: str,
+    payload: JobReconciliationRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_roles(["Admin", "SUPER_ADMIN", "Revenue"]))
+):
+    """
+    Reconciles a stalled or failed job run, clearing any stuck distributed locks.
+    Supports action='RECONCILE' to mark recovered or action='RETRY' to re-execute safely.
+    """
+    try:
+        result = reconcile_job_run(
+            db=db,
+            run_id=run_id,
+            action=payload.action,
+            reason=payload.reason or "Manual operator reconciliation",
+            initiated_by=current_user.email
+        )
+
+        audit = AuditLog(
+            market_id="mumbai",
+            source_module="BILLING_SCHEDULER",
+            action_taken=f"RECONCILE_JOB_{payload.action.upper()}",
+            decision="EXECUTED",
+            user_id=current_user.id,
+            user_name=current_user.email or "Operator",
+            user_role=current_user.role,
+            confidence_score=1.0,
+            original_signals={"run_id": run_id, "action": payload.action, "reason": payload.reason},
+            execution_result={"status": "RECONCILED", "run_id": run_id}
+        )
+        db.add(audit)
+        db.commit()
+
+        return result
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e)
+        )
+
+
+# ─── 10. Durable Notification Outbox Queue Operations ────────────────────────
+
+@router.get("/notifications/outbox", response_model=NotificationOutboxListResponse)
+def list_notification_outbox(
+    channel: Optional[str] = Query(None, description="Filter by delivery channel (SMS, EMAIL, WHATSAPP)"),
+    status_filter: Optional[str] = Query(None, alias="status", description="Filter by queue status"),
+    market_id: Optional[str] = Query(None, description="Filter by market ID"),
+    customer_id: Optional[int] = Query(None, description="Filter by customer ID"),
+    page: int = Query(1, ge=1, description="Page number"),
+    page_size: int = Query(20, ge=1, le=100, description="Items per page"),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_roles(["Admin", "SUPER_ADMIN", "Revenue", "Viewer", "Care"])),
+    current_market: str = Depends(get_current_market)
+):
+    """
+    Returns durable customer notification outbox records with strict PII & OTP redaction.
+    Displays recipient masking, delivery channel, retry counts, simulated status, and last errors.
+    """
+    target_market = market_id if market_id is not None else current_market
+    return get_notification_outbox_items(
+        db=db,
+        channel=channel,
+        status=status_filter,
+        market_id=target_market,
+        customer_id=customer_id,
+        page=page,
+        page_size=page_size
+    )
+
+
+@router.post("/notifications/outbox/process")
+def process_outbox_manually(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_roles(["Admin", "SUPER_ADMIN", "Revenue"]))
+):
+    """Triggers safe idempotent dispatch of pending outbox notifications."""
+    res = execute_durable_billing_job(
+        db=db,
+        job_type="OUTBOX_DISPATCH",
+        market_id="all",
+        initiated_by=f"MANUAL_DISPATCH_{current_user.email}"
+    )
+    return res
+
 
 
 # ─── Payment Order Initiation & Razorpay Webhooks (Phase 9B Workstream A) ─────
