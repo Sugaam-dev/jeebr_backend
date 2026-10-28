@@ -1,4 +1,5 @@
 from sqlalchemy import create_engine
+from sqlalchemy.engine import make_url
 from sqlalchemy.orm import declarative_base, sessionmaker
 from app.config import settings
 
@@ -17,6 +18,30 @@ if db_url.startswith("sqlite"):
         connect_args={"check_same_thread": False}
     )
 else:
+    parsed_url = make_url(db_url)
+    try:
+        dialect_cls = parsed_url.get_dialect()
+        is_psycopg3 = getattr(dialect_cls, "driver", "") == "psycopg"
+    except Exception:
+        is_psycopg3 = False
+
+    connect_args = {
+        "connect_timeout": 10,
+        "keepalives": 1,
+        "keepalives_idle": 30,
+        "keepalives_interval": 10,
+        "keepalives_count": 5
+    }
+
+    # In PgBouncer / Supavisor Transaction Pooling mode (e.g. Supabase port 6543),
+    # client connections are multiplexed across different backend PostgreSQL workers.
+    # Psycopg 3's automatic named prepared statements (_pg3_0, _pg3_1, etc.) fail with
+    # InvalidSqlStatementName or DuplicatePreparedStatement when statements are routed
+    # to different backend workers. Disabling statement preparation (prepare_threshold=None)
+    # is required for transaction poolers.
+    if is_psycopg3 or "psycopg" in str(parsed_url.drivername):
+        connect_args["prepare_threshold"] = None
+
     engine = create_engine(
         db_url,
         pool_pre_ping=True,
@@ -24,13 +49,7 @@ else:
         max_overflow=5,
         pool_recycle=300,
         pool_timeout=30,
-        connect_args={
-            "connect_timeout": 10,
-            "keepalives": 1,
-            "keepalives_idle": 30,
-            "keepalives_interval": 10,
-            "keepalives_count": 5
-        }
+        connect_args=connect_args
     )
 
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, expire_on_commit=False, bind=engine)

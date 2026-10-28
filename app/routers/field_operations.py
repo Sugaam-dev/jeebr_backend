@@ -368,30 +368,41 @@ def get_field_jobs(
     market: str = Depends(get_current_market)
 ):
     """List field assignments for the current market with optional filters."""
-    # Auto-synchronize unlinked assigned tickets in market
+    # Auto-synchronize unlinked assigned tickets in market (Bulk query to eliminate N+1 roundtrips)
     unlinked_tickets = db.query(Ticket).filter(
         Ticket.market_id == market,
         Ticket.assigned_resource_id.isnot(None),
         Ticket.status.notin_(["Resolved", "Closed"])
     ).all()
-    for t in unlinked_tickets:
-        existing_fa = db.query(FieldAssignment).filter(FieldAssignment.ticket_id == t.id).first()
-        if not existing_fa:
-            new_fa = FieldAssignment(
-                ticket_id=t.id,
-                engineer_id=t.assigned_resource_id,
-                market_id=t.market_id or market,
-                status="ASSIGNED",
-                created_at=t.created_at or datetime.utcnow(),
-                notes=f"Auto-synchronized field dispatch for ticket {t.ticket_code}"
-            )
-            db.add(new_fa)
-        else:
-            if existing_fa.engineer_id != t.assigned_resource_id:
-                existing_fa.engineer_id = t.assigned_resource_id
-            if existing_fa.status in ("CANCELLED", "REJECTED"):
-                existing_fa.status = "ASSIGNED"
-    db.commit()
+    if unlinked_tickets:
+        ticket_ids = [t.id for t in unlinked_tickets]
+        existing_fas = {
+            fa.ticket_id: fa
+            for fa in db.query(FieldAssignment).filter(FieldAssignment.ticket_id.in_(ticket_ids)).all()
+        }
+        has_changes = False
+        for t in unlinked_tickets:
+            existing_fa = existing_fas.get(t.id)
+            if not existing_fa:
+                new_fa = FieldAssignment(
+                    ticket_id=t.id,
+                    engineer_id=t.assigned_resource_id,
+                    market_id=t.market_id or market,
+                    status="ASSIGNED",
+                    created_at=t.created_at or datetime.utcnow(),
+                    notes=f"Auto-synchronized field dispatch for ticket {t.ticket_code}"
+                )
+                db.add(new_fa)
+                has_changes = True
+            else:
+                if existing_fa.engineer_id != t.assigned_resource_id:
+                    existing_fa.engineer_id = t.assigned_resource_id
+                    has_changes = True
+                if existing_fa.status in ("CANCELLED", "REJECTED"):
+                    existing_fa.status = "ASSIGNED"
+                    has_changes = True
+        if has_changes:
+            db.commit()
 
     query = db.query(FieldAssignment).options(
         joinedload(FieldAssignment.ticket).joinedload(Ticket.customer),

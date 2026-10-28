@@ -16,6 +16,23 @@ from app import markets
 
 logger = logging.getLogger(__name__)
 
+import re
+
+class SensitiveDataLoggingFilter(logging.Filter):
+    """Sanitize sensitive bearer tokens from application and access logs."""
+    def filter(self, record: logging.LogRecord) -> bool:
+        if isinstance(record.msg, str):
+            record.msg = re.sub(r'([?&]token=)[^&\s]+', r'\1[REDACTED]', record.msg)
+        if record.args:
+            clean = []
+            for a in record.args:
+                clean.append(re.sub(r'([?&]token=)[^&\s]+', r'\1[REDACTED]', a) if isinstance(a, str) else a)
+            record.args = tuple(clean)
+        return True
+
+for _n in ("", "uvicorn", "uvicorn.access", "uvicorn.error", "app.main"):
+    logging.getLogger(_n).addFilter(SensitiveDataLoggingFilter())
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Startup: Start background scheduler runner if enabled
@@ -143,7 +160,8 @@ async def http_exception_handler(request: Request, exc: HTTPException):
 @app.exception_handler(Exception)
 async def global_cors_exception_handler(request: Request, exc: Exception):
     """Ensure CORS headers are attached even on unexpected 500 errors without leaking internal tracebacks."""
-    logger.exception(f"Unhandled error processing {request.method} {request.url}: {exc}")
+    safe_url = re.sub(r"([?&]token=)[^&\s]+", r"\1[REDACTED]", str(request.url))
+    logger.exception(f"Unhandled error processing {request.method} {safe_url}: {exc}")
     headers = _build_cors_headers(request)
     return JSONResponse(
         status_code=500,
@@ -210,6 +228,15 @@ app.include_router(finance.router, prefix=settings.API_V1_STR)
 app.include_router(inventory.router, prefix=settings.API_V1_STR)
 app.include_router(tariffs.router, prefix=settings.API_V1_STR)
 app.include_router(vouchers.router, prefix=settings.API_V1_STR)
+
+# Alias /api/invoices/issue for direct client compatibility
+app.add_api_route(
+    f"{settings.API_V1_STR}/invoices/issue",
+    finance.create_invoice,
+    methods=["POST"],
+    response_model=finance.InvoiceDetailResponse,
+    tags=["Finance & Billing Management"]
+)
 
 @app.on_event("startup")
 def on_startup():
