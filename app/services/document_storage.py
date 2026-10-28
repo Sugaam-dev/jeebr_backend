@@ -322,10 +322,7 @@ def generate_storage_key(market_id: str, crm_customer_id: str, document_type: st
 def mask_document_identifier(doc_type: str, raw_identifier: Optional[str]) -> Optional[str]:
     """
     Securely masks sensitive KYC identifiers before storing in database or returning to UI.
-    Examples:
-      - 12-digit Aadhaar: XXXX-XXXX-1234
-      - 10-char PAN: XXXXX1234F
-      - GSTIN: 27XXXXX1234X1ZX
+    Enforces strict masked-Aadhaar policy: rejects unmasked 12 digits and validates masking format.
     """
     if not raw_identifier:
         return None
@@ -334,10 +331,22 @@ def mask_document_identifier(doc_type: str, raw_identifier: Optional[str]) -> Op
     if not clean:
         return None
 
-    if len(clean) == 12 and clean.isdigit():
-        # Masked Aadhaar format
-        return f"XXXX-XXXX-{clean[-4:]}"
-    elif len(clean) == 10 and clean[:5].isalpha():
+    # Handle Aadhaar Masked Policy
+    if doc_type in ("AADHAAR_MASKED", "AADHAAR"):
+        # Reject unmasked 12 digits (strictly prohibited)
+        if clean.isdigit() and len(clean) == 12:
+            raise DocumentValidationError("Unmasked 12-digit Aadhaar numbers are strictly prohibited. Provide an authorized masked Aadhaar identifier (e.g. XXXX-XXXX-1234).")
+        # Verify masked format: first 8 masked with X, *, •, x and last 4 digits
+        masked_match = re.match(r"^[X*•x]{8}(\d{4})$", clean)
+        if masked_match:
+            return f"XXXX-XXXX-{masked_match.group(1)}"
+        raw_clean = raw_identifier.strip()
+        sep_match = re.match(r"^[X*•x]{4}[-\s]?[X*•x]{4}[-\s]?(\d{4})$", raw_clean)
+        if sep_match:
+            return f"XXXX-XXXX-{sep_match.group(1)}"
+        raise DocumentValidationError("Invalid masked Aadhaar format. First 8 digits must be masked and last 4 digits visible (e.g. XXXX-XXXX-1234).")
+
+    if len(clean) == 10 and clean[:5].isalpha():
         # PAN format: 5 letters, 4 digits, 1 letter
         return f"XXXXX{clean[5:9]}{clean[9:]}"
     elif len(clean) > 8:

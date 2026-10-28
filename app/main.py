@@ -1,7 +1,9 @@
 from contextlib import asynccontextmanager
 import logging
-from fastapi import FastAPI, Request, Response, status
+from fastapi import FastAPI, Request, Response, status, HTTPException
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
+from fastapi.encoders import jsonable_encoder
 from fastapi.middleware.cors import CORSMiddleware
 from app.config import settings
 import app.database as app_db
@@ -76,12 +78,9 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-@app.exception_handler(Exception)
-async def global_cors_exception_handler(request: Request, exc: Exception):
-    """Ensure CORS headers are attached even on unexpected 500 errors."""
-    logger.exception(f"Unhandled error processing {request.method} {request.url}: {exc}")
+def _build_cors_headers(request: Request, existing_headers: dict = None) -> dict:
     origin = request.headers.get("origin", "")
-    headers = {}
+    headers = dict(existing_headers or {})
     is_allowed = (
         origin in settings.BACKEND_CORS_ORIGINS
         or origin.endswith(".vercel.app")
@@ -93,10 +92,66 @@ async def global_cors_exception_handler(request: Request, exc: Exception):
         headers["Access-Control-Allow-Credentials"] = "true"
         headers["Access-Control-Allow-Headers"] = "*"
         headers["Access-Control-Allow-Methods"] = "*"
+    return headers
+
+@app.exception_handler(RequestValidationError)
+async def validation_exception_handler(request: Request, exc: RequestValidationError):
+    headers = _build_cors_headers(request)
+    field_errors = {}
+    for err in exc.errors():
+        loc = err.get("loc", [])
+        field = str(loc[-1]) if loc else "general"
+        field_errors[field] = err.get("msg", "Validation error")
 
     return JSONResponse(
+        status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+        content={
+            "error_code": "VALIDATION_ERROR",
+            "message": "Request validation failed. Please check the highlighted fields.",
+            "field_errors": field_errors,
+            "detail": jsonable_encoder(exc.errors())
+        },
+        headers=headers
+    )
+
+@app.exception_handler(HTTPException)
+async def http_exception_handler(request: Request, exc: HTTPException):
+    headers = _build_cors_headers(request, exc.headers)
+    status_code_map = {
+        400: "BAD_REQUEST",
+        401: "UNAUTHORIZED",
+        403: "FORBIDDEN",
+        404: "NOT_FOUND",
+        409: "CONFLICT",
+        422: "UNPROCESSABLE_ENTITY",
+        429: "TOO_MANY_REQUESTS",
+        500: "INTERNAL_SERVER_ERROR"
+    }
+    error_code = status_code_map.get(exc.status_code, "ERROR")
+    msg = exc.detail if isinstance(exc.detail, str) else str(exc.detail)
+
+    return JSONResponse(
+        status_code=exc.status_code,
+        content={
+            "error_code": error_code,
+            "message": msg,
+            "detail": exc.detail
+        },
+        headers=headers
+    )
+
+@app.exception_handler(Exception)
+async def global_cors_exception_handler(request: Request, exc: Exception):
+    """Ensure CORS headers are attached even on unexpected 500 errors without leaking internal tracebacks."""
+    logger.exception(f"Unhandled error processing {request.method} {request.url}: {exc}")
+    headers = _build_cors_headers(request)
+    return JSONResponse(
         status_code=500,
-        content={"detail": f"Internal Server Error: {str(exc)}"},
+        content={
+            "error_code": "INTERNAL_SERVER_ERROR",
+            "message": "An unexpected server error occurred. Please try again shortly.",
+            "detail": f"Internal Server Error: {str(exc)}"
+        },
         headers=headers
     )
 

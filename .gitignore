@@ -69,3 +69,6 @@ venv.bak/
 *.swo
 .DS_Store
 Thumbs.db
+
+# Local sandboxed file storage / KYC uploads
+storage/

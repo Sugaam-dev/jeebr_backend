@@ -63,14 +63,17 @@ def create_voucher(
     current_user: User = Depends(require_roles(["Admin", "Super Admin", "Billing"])),
     current_market: str = Depends(get_current_market)
 ):
-    target_market = getattr(voucher_in, 'market_id', 'ALL') or 'ALL'
+    target_market = getattr(voucher_in, 'market_id', None)
     if not is_super_admin(current_user.role):
-        if target_market.upper() == "ALL":
+        if not target_market:
+            voucher_in.market_id = current_market
+            target_market = current_market
+        elif target_market.upper() == "ALL":
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="Only Super Admin operators can create global-market (ALL) vouchers."
             )
-        if target_market.lower() != current_market.lower():
+        elif target_market.lower() != current_market.lower():
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail=f"Access denied: Operator market '{current_market}' cannot create vouchers for market '{target_market}'."

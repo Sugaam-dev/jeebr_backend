@@ -1,7 +1,7 @@
 from decimal import Decimal
 from datetime import datetime
-from typing import Optional, List, Any, Dict
-from pydantic import BaseModel, EmailStr, Field, model_validator
+from typing import Optional, List, Any, Dict, Union
+from pydantic import BaseModel, EmailStr, Field, model_validator, field_validator
 
 # Auth Schemas
 class Token(BaseModel):
@@ -306,8 +306,8 @@ class CRMContactUpdate(BaseModel):
     is_archived: Optional[bool] = None
 
 class CRMContactResponse(BaseModel):
-    id: str
-    crm_customer_id: str
+    id: Any
+    crm_customer_id: Any
     first_name: str
     last_name: Optional[str] = None
     email: Optional[str] = None
@@ -349,8 +349,8 @@ class CRMAddressUpdate(BaseModel):
     is_archived: Optional[bool] = None
 
 class CRMAddressResponse(BaseModel):
-    id: str
-    crm_customer_id: str
+    id: Any
+    crm_customer_id: Any
     address_type: str
     address_line1: str
     address_line2: Optional[str] = None
@@ -372,8 +372,8 @@ class CRMAddressResponse(BaseModel):
         from_attributes = True
 
 class CRMDocumentResponse(BaseModel):
-    id: str
-    crm_customer_id: str
+    id: Any
+    crm_customer_id: Any
     document_type: str
     document_identifier: Optional[str] = None
     file_name: str
@@ -406,8 +406,8 @@ class CRMSurveyCompleteRequest(BaseModel):
     notes: Optional[str] = None
 
 class CRMActivityResponse(BaseModel):
-    id: str
-    crm_customer_id: str
+    id: Any
+    crm_customer_id: Any
     activity_type: str
     summary: str
     details: Optional[str] = None
@@ -435,6 +435,35 @@ class CRMCustomerCreate(BaseModel):
     billing_currency: Optional[str] = "INR"
     primary_contact: Optional[CRMContactCreate] = None
     installation_address: Optional[CRMAddressCreate] = None
+    address_line1: Optional[str] = None
+    address_line2: Optional[str] = None
+    city: Optional[str] = None
+    state: Optional[str] = None
+    postal_code: Optional[str] = None
+    latitude: Optional[float] = None
+    longitude: Optional[float] = None
+
+    @model_validator(mode="after")
+    def populate_address_from_flat_fields(self):
+        if not self.installation_address and self.address_line1:
+            self.installation_address = CRMAddressCreate(
+                address_line1=self.address_line1,
+                address_line2=self.address_line2,
+                city=self.city or "Mumbai",
+                state=self.state or "Maharashtra",
+                postal_code=self.postal_code or "400001",
+                latitude=self.latitude,
+                longitude=self.longitude,
+                address_type="INSTALLATION"
+            )
+        return self
+
+    @field_validator("account_type")
+    @classmethod
+    def validate_account_type(cls, v: str) -> str:
+        if v and v.upper() not in ["RESIDENTIAL", "ENTERPRISE", "SME"]:
+            raise ValueError(f"Invalid account_type '{v}'. Allowed: ['RESIDENTIAL', 'ENTERPRISE', 'SME']")
+        return v.upper() if v else "RESIDENTIAL"
 
 class CRMCustomerUpdate(BaseModel):
     legal_name: Optional[str] = Field(None, min_length=2, max_length=255)
@@ -478,16 +507,25 @@ class PaginatedCustomersResponse(BaseModel):
 class CRMLeadCreate(BaseModel):
     legal_name: str = Field(..., min_length=2, max_length=255)
     trade_name: Optional[str] = Field(None, max_length=255)
+    company_name: Optional[str] = Field(None, max_length=255)
     email: Optional[EmailStr] = None
     phone: Optional[str] = Field(None, max_length=32)
     market_id: Optional[str] = None
     account_type: str = Field("RESIDENTIAL", max_length=32)
+    estimated_mrr: Optional[float] = None
     locality: Optional[str] = "Colaba"
     address_line1: Optional[str] = None
     city: Optional[str] = None
     state: Optional[str] = None
     postal_code: Optional[str] = None
     notes: Optional[str] = None
+
+    @field_validator("account_type")
+    @classmethod
+    def validate_account_type(cls, v: str) -> str:
+        if v and v.upper() not in ["RESIDENTIAL", "ENTERPRISE", "SME"]:
+            raise ValueError(f"Invalid account_type '{v}'. Allowed: ['RESIDENTIAL', 'ENTERPRISE', 'SME']")
+        return v.upper() if v else "RESIDENTIAL"
 
 class CRMLeadResponse(BaseModel):
     id: str
@@ -546,11 +584,18 @@ class CRMVoucherResponse(BaseModel):
     title: str
     benefit: str
     type: str
+    voucher_type: Optional[str] = None
     status: str
     source_module: str
     expiry_days: int
     provisioning_dependency: str = "OSS/BSS Billing & Provisioning Engine (Phase 2)"
     created_at: datetime
+
+    @model_validator(mode="after")
+    def populate_voucher_type(self):
+        if not self.voucher_type:
+            self.voucher_type = self.type
+        return self
 
 
 # Intelligent Journeys Schemas
@@ -1234,7 +1279,7 @@ class ServiceActivationOrderResponse(BaseModel):
     idempotency_key: str
     market_id: str
     customer_id: int
-    crm_customer_id: Optional[str] = None
+    crm_customer_id: Optional[Any] = None
     customer_name: str
     customer_code: str
     account_type: str
@@ -1280,6 +1325,13 @@ class ServiceActivationOrderResponse(BaseModel):
     class Config:
         from_attributes = True
 
+    @field_validator("crm_customer_id", mode="before")
+    @classmethod
+    def serialize_crm_customer_id(cls, v):
+        if v is not None:
+            return str(v)
+        return None
+
 
 class CustomerEligibilityResponse(BaseModel):
     eligible: bool
@@ -1294,8 +1346,11 @@ class CustomerEligibilityResponse(BaseModel):
     suggested_port_id: Optional[int] = None
     olt_device_code: Optional[str] = None
     blocking_errors: List[str] = []
+    blocking_reasons: List[str] = []
     prerequisites: List[str] = []
     reasons: List[str] = []
+    customer_lifecycle_status: Optional[str] = None
+    serviceability_status: Optional[str] = None
 
 
 # ─── SentinelOS Finance & Billing Schemas ─────────────────────────────────────
@@ -1303,6 +1358,7 @@ class CustomerEligibilityResponse(BaseModel):
 class BillingAccountResponse(BaseModel):
     id: Any
     account_number: str
+    account_code: Optional[str] = None
     customer_id: Optional[int] = None
     crm_customer_id: Optional[Any] = None
     customer_name: Optional[str] = None
@@ -1318,16 +1374,24 @@ class BillingAccountResponse(BaseModel):
     created_at: datetime
     updated_at: datetime
 
+    @model_validator(mode="after")
+    def sync_account_code(self):
+        if not self.account_code and self.account_number:
+            self.account_code = self.account_number
+        return self
+
     class Config:
         from_attributes = True
 
 
 class BillingAccountCreateRequest(BaseModel):
-    customer_id: int
-    billing_type: Optional[str] = "POSTPAID"
+    customer_id: Union[int, str]
+    billing_type: Optional[str] = None
+    account_type: Optional[str] = None
     currency: Optional[str] = "INR"
     credit_limit: Optional[float] = 0.0
     payment_term_days: Optional[int] = 15
+    market_id: Optional[str] = None
 
 
 class BillingSubscriptionResponse(BaseModel):
@@ -1359,8 +1423,8 @@ class BillingSubscriptionResponse(BaseModel):
 
 
 class BillingSubscriptionCreateRequest(BaseModel):
-    billing_account_id: Optional[str] = None
-    customer_id: int
+    billing_account_id: Optional[Union[int, str]] = None
+    customer_id: Union[int, str]
     plan_id: str
     billing_frequency: Optional[str] = "MONTHLY"
     start_date: Optional[datetime] = None
@@ -1425,13 +1489,23 @@ class InvoiceDetailResponse(BaseModel):
 
 
 class InvoiceCreateRequest(BaseModel):
-    subscription_id: str
+    subscription_id: Union[str, int]
     billing_period_start: Optional[datetime] = None
     billing_period_end: Optional[datetime] = None
-    discount_amount: Optional[float] = 0.0
-    tax_rate: Optional[float] = 18.0
+    period_start: Optional[datetime] = None
+    period_end: Optional[datetime] = None
+    discount_amount: Optional[float] = Field(0.0, ge=0.0)
+    tax_rate: Optional[float] = Field(18.0, ge=0.0, le=100.0)
     notes: Optional[str] = None
     idempotency_key: Optional[str] = None
+
+    @model_validator(mode="after")
+    def sync_billing_periods(self):
+        if not self.billing_period_start and self.period_start:
+            self.billing_period_start = self.period_start
+        if not self.billing_period_end and self.period_end:
+            self.billing_period_end = self.period_end
+        return self
 
 
 class PaymentAllocationResponse(BaseModel):
@@ -1474,12 +1548,12 @@ class PaymentResponse(BaseModel):
 
 
 class PaymentRecordRequest(BaseModel):
-    billing_account_id: Optional[str] = None
-    customer_id: Optional[int] = None
+    billing_account_id: Optional[Union[int, str]] = None
+    customer_id: Optional[Union[int, str]] = None
     amount: float
     currency: Optional[str] = "INR"
     payment_method: Optional[str] = "UPI"
-    invoice_id: Optional[int] = None
+    invoice_id: Optional[Union[int, str]] = None
     idempotency_key: str
     provider_name: Optional[str] = "SIMULATED_GATEWAY"
     auto_allocate: Optional[bool] = True
@@ -1540,6 +1614,10 @@ class JournalLineResponse(BaseModel):
 
     class Config:
         from_attributes = True
+
+
+class JournalEntryReverseRequest(BaseModel):
+    reason: Optional[str] = "General ledger entry reversal"
 
 
 class JournalEntryResponse(BaseModel):

@@ -94,6 +94,11 @@ def signup(req: SignupRequest, response: Response, db: Session = Depends(get_db)
     db.commit()
     db.refresh(new_user)
 
+    # Assign default market assignment for self-registered customer/viewer
+    from app.models import UserMarketAssignment
+    db.add(UserMarketAssignment(user_id=new_user.id, market_id="mumbai", is_primary=True))
+    db.commit()
+
     log_security_event(
         db=db,
         action=f"User signup: {new_user.email} with role {new_user.role}",

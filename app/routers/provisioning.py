@@ -101,7 +101,7 @@ def list_provisioning_orders(
     customer_id: Optional[int] = Query(None, description="Filter by customer ID"),
     page: int = Query(1, ge=1, description="Page number"),
     page_size: int = Query(50, ge=1, le=200, description="Page size"),
-    sort_order: str = Query("desc", regex="^(asc|desc)$"),
+    sort_order: str = Query("desc", pattern="^(asc|desc)$"),
     db: Session = Depends(get_db),
     current_user: User = Depends(require_roles(READ_ROLES)),
     market: str = Depends(get_current_market)

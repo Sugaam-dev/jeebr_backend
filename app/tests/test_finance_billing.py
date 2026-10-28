@@ -576,6 +576,37 @@ def test_customer_role_cannot_access_other_customer_bills(db_session: Session):
     assert "access denied" in res.json()["detail"].lower()
 
 
+def test_my_billing_summary_for_new_and_existing_customers(db_session: Session):
+    # 1. Existing customer
+    cust = db_session.query(Customer).filter(Customer.email == "customer@pmrg.in").first()
+    cust_headers = _auth_headers(role="Customer", market="mumbai", email=cust.email)
+    res = client.get("/api/finance/my-billing", headers=cust_headers)
+    assert res.status_code == 200
+    data = res.json()
+    assert data["customer_id"] == cust.id
+    assert data["customer_code"] == cust.customer_code
+
+    # 2. Newly registered self-service customer without CRM master record
+    new_user_email = f"selfserve_{uuid.uuid4().hex[:6]}@example.com"
+    new_user = User(
+        email=new_user_email,
+        hashed_password="hash",
+        full_name="New SelfServe User",
+        role="Customer",
+        is_active=True
+    )
+    db_session.add(new_user)
+    db_session.commit()
+
+    new_cust_headers = _auth_headers(role="Customer", market="mumbai", email=new_user_email)
+    res_new = client.get("/api/finance/my-billing", headers=new_cust_headers)
+    assert res_new.status_code == 200
+    new_data = res_new.json()
+    assert new_data["customer_code"] == "PENDING-PROVISIONING"
+    assert new_data["recent_invoices"] == []
+    assert new_data["active_subscriptions"] == []
+
+
 # ─── 9. Background Jobs: Billing Runs & Overdue Dunning ────────────────────────
 
 def test_recurring_billing_run_job(db_session: Session):

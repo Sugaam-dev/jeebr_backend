@@ -20,7 +20,7 @@ class User(Base):
 
     # Relationships
     reviews = relationship('Recommendation', back_populates='reviewer', foreign_keys='Recommendation.reviewed_by_id')
-    executed_recommendations = relationship('Recommendation', foreign_keys='Recommendation.executed_by_id')
+    executed_recommendations = relationship('Recommendation', back_populates='executor', foreign_keys='Recommendation.executed_by_id')
     audit_logs = relationship('AuditLog', back_populates='user')
     market_assignments = relationship('UserMarketAssignment', back_populates='user', foreign_keys='UserMarketAssignment.user_id', cascade='all, delete-orphan')
 
@@ -286,7 +286,7 @@ class Recommendation(Base):
     max_retries = Column(Integer, default=2)
 
     reviewer = relationship('User', back_populates='reviews', foreign_keys=[reviewed_by_id])
-    executor = relationship('User', foreign_keys=[executed_by_id])
+    executor = relationship('User', back_populates='executed_recommendations', foreign_keys=[executed_by_id])
     audit_logs = relationship('AuditLog', back_populates='recommendation')
     source_alarm = relationship('NetworkAlarm')
 

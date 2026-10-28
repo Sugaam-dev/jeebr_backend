@@ -57,7 +57,12 @@ def validate_customer_eligibility(
         blocking_errors.append(f"Customer belongs to market '{customer.market_id}', not '{market_id}'. Cross-market activation is forbidden.")
 
     # 3. Customer lifecycle status check
-    crm_cust = db.query(CRMCustomer).filter(CRMCustomer.legacy_customer_id == customer.id).first()
+    crm_cust = db.query(CRMCustomer).filter(
+        or_(
+            CRMCustomer.legacy_customer_id == customer.id,
+            CRMCustomer.customer_number == customer.customer_code
+        )
+    ).first()
     if crm_cust and crm_cust.status in [CustomerLifecycleStatus.TERMINATED, CustomerLifecycleStatus.SUSPENDED]:
         blocking_errors.append(f"Customer lifecycle status is '{crm_cust.status}'. Activation is prohibited for suspended/terminated accounts.")
 
@@ -120,7 +125,7 @@ def validate_customer_eligibility(
     crm_addr = None
     if crm_cust:
         crm_addr = db.query(CRMAddress).filter(
-            CRMAddress.customer_id == crm_cust.id,
+            CRMAddress.crm_customer_id == crm_cust.id,
             CRMAddress.address_type == "INSTALLATION",
             CRMAddress.is_archived == False
         ).first()
@@ -148,8 +153,11 @@ def validate_customer_eligibility(
         "suggested_port_id": suggested_port.id if suggested_port else None,
         "olt_device_code": olt.device_code if olt else None,
         "blocking_errors": blocking_errors,
+        "blocking_reasons": blocking_errors,
         "prerequisites": prerequisites,
-        "reasons": ["Pre-flight requirements satisfied." if is_eligible else "Prerequisites or blocking constraints identified."]
+        "reasons": ["Pre-flight requirements satisfied." if is_eligible else "Prerequisites or blocking constraints identified."],
+        "customer_lifecycle_status": crm_cust.status if crm_cust else customer.status,
+        "serviceability_status": crm_addr.serviceability_status if crm_addr else ("SERVICEABLE" if (customer.service_latitude and customer.service_longitude) else "PENDING_SURVEY")
     }
 
 
@@ -194,7 +202,12 @@ def create_activation_order(
 
     customer = db.query(Customer).filter(Customer.id == customer_id).first()
     plan = eligibility["plan"]
-    crm_cust = db.query(CRMCustomer).filter(CRMCustomer.legacy_customer_id == customer.id).first()
+    crm_cust = db.query(CRMCustomer).filter(
+        or_(
+            CRMCustomer.legacy_customer_id == customer.id,
+            CRMCustomer.customer_number == customer.customer_code
+        )
+    ).first()
 
     # 3. Generate unique order code
     order_code = f"ACT-{(market_id[:3]).upper()}-{datetime.utcnow().year}-{uuid.uuid4().hex[:6].upper()}"

@@ -346,7 +346,7 @@ def test_kyc_document_upload_download_and_pii_masking(db_session):
     files = {"file": ("aadhaar_proof.pdf", io.BytesIO(SAMPLE_PDF_CONTENT), "application/pdf")}
     form_data = {
         "document_type": "AADHAAR_MASKED",
-        "document_identifier": "987654321098"  # 12-digit Aadhaar
+        "document_identifier": "XXXX-XXXX-1098"  # Masked Aadhaar
     }
     resp = client.post(f"/api/customers/{crm_cust.id}/documents", files=files, data=form_data, headers=upload_headers)
     assert resp.status_code == 201, resp.text

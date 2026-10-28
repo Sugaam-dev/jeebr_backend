@@ -15,7 +15,7 @@ from datetime import datetime
 from decimal import Decimal, ROUND_HALF_UP
 from typing import List, Dict, Any, Optional, Tuple
 from sqlalchemy.orm import Session
-from sqlalchemy import func
+from sqlalchemy import func, or_
 
 from app.models_finance import (
     JournalEntry, JournalLine, ChartOfAccounts
@@ -172,7 +172,12 @@ def reverse_journal_entry(
     Create a balanced reversing journal entry for an existing entry.
     Marks original entry as reversed and links the reversal.
     """
-    original = db.query(JournalEntry).filter(JournalEntry.id == entry_id).first()
+    original = db.query(JournalEntry).filter(
+        or_(
+            JournalEntry.id == entry_id,
+            JournalEntry.entry_number == str(entry_id)
+        )
+    ).first()
     if not original:
         raise ValueError(f"Journal entry {entry_id} not found.")
 

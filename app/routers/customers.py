@@ -1,6 +1,6 @@
 import uuid
 import re
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import List, Optional, Any, Dict
 from fastapi import APIRouter, Depends, HTTPException, Query, Header, Request, Response, status, UploadFile, File, Form
 from fastapi.responses import StreamingResponse
@@ -14,6 +14,7 @@ from app.models_crm import (
     AccountType, CustomerLifecycleStatus, ContactRole, AddressType,
     ServiceabilityStatus, ActivityType, DocumentType, DocumentUploadStatus, VerificationStatus
 )
+from app.models_finance import VoucherType
 from app.schemas import (
     CustomerListResponse, Customer360Response, UsageSummary, TicketSummary,
     InvoiceSummary, NodeResponse,
@@ -844,7 +845,7 @@ def get_customer_map_locations(
 
 @router.get("/vouchers", response_model=List[CRMVoucherResponse])
 def list_customer_vouchers(
-    customer_id: Optional[int] = Query(None),
+    customer_id: Optional[str] = Query(None),
     db: Session = Depends(get_db),
     current_user = Depends(get_current_user),
     market: str = Depends(get_current_market)
@@ -855,7 +856,11 @@ def list_customer_vouchers(
     """
     query = db.query(Customer).filter(Customer.market_id == market)
     if customer_id:
-        query = query.filter(Customer.id == customer_id)
+        c_id_str = str(customer_id).strip()
+        if c_id_str.isdigit():
+            query = query.filter(Customer.id == int(c_id_str))
+        else:
+            query = query.filter(Customer.customer_code == c_id_str)
 
     if normalize_role_name(current_user.role) == "Customer":
         user_email = (current_user.email or "").lower().strip()
@@ -919,8 +924,8 @@ def list_customer_vouchers(
 
 @router.post("/{customer_id}/vouchers/issue", response_model=CRMVoucherResponse)
 def issue_customer_voucher(
-    customer_id: int,
-    voucher_type: str = Query("DATA_BOOSTER"),
+    customer_id: str,
+    voucher_type: str = Query("SPEED_BOOST"),
     db: Session = Depends(get_db),
     current_user = Depends(require_roles(["Admin", "Care", "Revenue", "SUPER_ADMIN"])),
     market: str = Depends(get_current_market)
@@ -929,12 +934,47 @@ def issue_customer_voucher(
     Stage an autonomous customer voucher for retention or goodwill.
     Logs activity and documents the pending billing engine provisioning dependency.
     """
-    customer, crm_cust = _resolve_customer_record(str(customer_id), db, current_user)
+    v_norm = voucher_type.upper().strip()
+    if v_norm == "DATA_BOOSTER":
+        v_norm = VoucherType.DATA_TOPUP
+    if v_norm not in VoucherType.ALL:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"Invalid voucher_type '{voucher_type}'. Allowed types: {list(VoucherType.ALL)}"
+        )
+
+    customer, crm_cust = _resolve_customer_record(str(customer_id).strip(), db, current_user)
+    if not customer and not crm_cust:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Customer '{customer_id}' not found.")
+
+    if not customer and crm_cust:
+        customer = _ensure_operational_customer(crm_cust, db)
     if not customer:
-        raise HTTPException(status_code=404, detail="Operational customer not found")
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Operational customer '{customer_id}' not found.")
+
+    # Account status & eligibility check
+    cust_status = getattr(customer, "status", "")
+    if cust_status in ("Churned", "Terminated", "Suspended"):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"Cannot issue courtesy voucher: customer lifecycle status is '{cust_status}'."
+        )
 
     crm_c = _ensure_crm_customer(customer, db)
-    vch_code = f"VCH-{voucher_type[:4].upper()}-{customer.customer_code.replace('CUST-', '')}-{int(datetime.utcnow().timestamp())%10000}"
+
+    # Duplicate / rate limiting check: prevent issuing duplicate courtesy vouchers of same type within 5 mins
+    recent = db.query(CRMActivity).filter(
+        CRMActivity.crm_customer_id == crm_c.id,
+        CRMActivity.summary.like(f"Issued Courtesy Voucher VCH-{v_norm[:4].upper()}%"),
+        CRMActivity.created_at >= datetime.utcnow() - timedelta(minutes=5)
+    ).first()
+    if recent:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Duplicate request: A courtesy voucher of type '{v_norm}' was already issued for this subscriber recently."
+        )
+
+    vch_code = f"VCH-{v_norm[:4].upper()}-{customer.customer_code.replace('CUST-', '')}-{int(datetime.utcnow().timestamp())%10000}"
 
     activity = CRMActivity(
         id=uuid.uuid4(),
@@ -953,9 +993,9 @@ def issue_customer_voucher(
         customer_id=customer.id,
         customer_code=customer.customer_code,
         customer_name=customer.name,
-        title=f"Courtesy {voucher_type.replace('_', ' ').title()} Voucher",
+        title=f"Courtesy {v_norm.replace('_', ' ').title()} Voucher",
         benefit="Complimentary telecom concession applied to subscriber profile.",
-        type=voucher_type,
+        type=v_norm,
         status="STAGED",
         source_module="CRM Voucher Console",
         expiry_days=14,
@@ -2304,7 +2344,16 @@ async def upload_customer_document(
     if not crm_cust and customer:
         crm_cust = _ensure_crm_customer(customer, db)
 
-    doc_type = document_type.strip().upper()
+    DOC_TYPE_ALIASES = {
+        "AADHAAR": DocumentType.AADHAAR_MASKED,
+        "CERT_INCORPORATION": DocumentType.INCORPORATION_CERT,
+        "GSTIN": DocumentType.INCORPORATION_CERT,
+        "UTILITY_BILL": DocumentType.LEASE_AGREEMENT,
+        "BOARD_RESOLUTION": DocumentType.INCORPORATION_CERT,
+        "OTHER": DocumentType.LEASE_AGREEMENT
+    }
+    raw_type = document_type.strip().upper()
+    doc_type = DOC_TYPE_ALIASES.get(raw_type, raw_type)
     if doc_type not in DocumentType.ALL:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
@@ -2333,7 +2382,10 @@ async def upload_customer_document(
     except Exception as exc:
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Storage persistence error: {exc}")
 
-    masked_id = mask_document_identifier(doc_type, document_identifier)
+    try:
+        masked_id = mask_document_identifier(doc_type, document_identifier)
+    except DocumentValidationError as dve:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(dve))
 
     new_doc = CRMDocument(
         id=uuid.uuid4(),

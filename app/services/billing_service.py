@@ -55,9 +55,14 @@ def ensure_billing_account(
     Find or lazily create an authoritative BillingAccount for an operational or CRM customer.
     Ensures 1:1 account mapping per customer.
     """
-    customer = db.query(Customer).filter(Customer.id == customer_id).first()
+    if isinstance(customer_id, int):
+        customer = db.query(Customer).filter(Customer.id == customer_id).first()
+    elif isinstance(customer_id, str) and customer_id.isdigit():
+        customer = db.query(Customer).filter(Customer.id == int(customer_id)).first()
+    else:
+        customer = db.query(Customer).filter(Customer.customer_code == str(customer_id)).first()
     if not customer:
-        raise ValueError(f"Customer #{customer_id} does not exist.")
+        raise ValueError(f"Customer '{customer_id}' does not exist.")
 
     crm_cust = db.query(CRMCustomer).filter(
         or_(
@@ -129,7 +134,12 @@ def create_subscription(
 
     # 2. Resolve billing account
     if billing_account_id:
-        account = db.query(BillingAccount).filter(BillingAccount.id == billing_account_id).first()
+        account = db.query(BillingAccount).filter(
+            or_(
+                BillingAccount.id == billing_account_id,
+                BillingAccount.account_number == str(billing_account_id)
+            )
+        ).first()
         if not account:
             raise ValueError(f"Billing account '{billing_account_id}' not found.")
     else:
@@ -561,7 +571,12 @@ def record_payment(
 
     # 2. Resolve billing account
     if billing_account_id:
-        account = db.query(BillingAccount).filter(BillingAccount.id == billing_account_id).first()
+        account = db.query(BillingAccount).filter(
+            or_(
+                BillingAccount.id == billing_account_id,
+                BillingAccount.account_number == str(billing_account_id)
+            )
+        ).first()
     elif customer_id:
         account = ensure_billing_account(db, customer_id)
     else:

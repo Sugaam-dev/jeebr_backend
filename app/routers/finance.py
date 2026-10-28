@@ -13,17 +13,20 @@ Enforces:
 5. Zero data fabrication and transparent simulation labeling.
 """
 
+import uuid
 from typing import List, Optional, Dict, Any
 from fastapi import APIRouter, Depends, HTTPException, Query, status, Response, Request
 from sqlalchemy.orm import Session
-from sqlalchemy import or_
+from sqlalchemy import or_, func
 
 from app.database import get_db
 from app.models import User, Customer, Invoice, AuditLog
+from app.models_crm import CRMCustomer
 from app.models_finance import (
     BillingAccount, BillingSubscription, Payment, CreditNote,
     RefundRecord, JournalEntry, VoucherRedemption, BillingAccountStatus,
-    SubscriptionStatus, InvoiceStatus, PaymentStatus, BillingJobRun, NotificationOutbox
+    SubscriptionStatus, InvoiceStatus, PaymentStatus, BillingJobRun, NotificationOutbox,
+    BillingType
 )
 from app.schemas import (
     BillingAccountResponse, BillingAccountCreateRequest,
@@ -34,7 +37,7 @@ from app.schemas import (
     PaymentResponse, PaymentRecordRequest,
     CreditNoteResponse, CreditNoteCreateRequest,
     RefundRecordResponse, RefundCreateRequest,
-    JournalEntryResponse, LedgerBalanceResponse,
+    JournalEntryResponse, JournalEntryReverseRequest, LedgerBalanceResponse,
     VoucherRedeemRequest, VoucherRedemptionResponse,
     FinanceOverviewResponse, BillingRunJobResponse, GatewayStatusResponse,
     BillingJobRunResponse, BillingJobRunsListResponse, ScheduledJobDescriptor,
@@ -179,23 +182,79 @@ def create_billing_account(
     market: str = Depends(get_current_market)
 ):
     """Create or activate a billing account for an eligible customer."""
+    # 1. Resolve target customer by int ID, customer_code or CRM customer number
+    cust_id_raw = req.customer_id
+    customer = None
+    if isinstance(cust_id_raw, int) or (isinstance(cust_id_raw, str) and cust_id_raw.isdigit()):
+        customer = db.query(Customer).filter(Customer.id == int(cust_id_raw)).first()
+    if not customer:
+        customer = db.query(Customer).filter(Customer.customer_code == str(cust_id_raw).strip()).first()
+    if not customer:
+        crm_c = db.query(CRMCustomer).filter(CRMCustomer.customer_number == str(cust_id_raw).strip()).first()
+        if crm_c and crm_c.legacy_customer_id:
+            customer = db.query(Customer).filter(Customer.id == crm_c.legacy_customer_id).first()
+    if not customer:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Customer '{req.customer_id}' not found."
+        )
+
+    # 2. Market isolation
+    target_market = (req.market_id or market).strip().lower()
+    if current_user.role != "SUPER_ADMIN" and customer.market_id.lower() != target_market:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=f"Cross-market violation: Customer belongs to market '{customer.market_id}', not authorized for '{target_market}'."
+        )
+
+    # 3. Validate billing type
+    raw_btype = req.billing_type or req.account_type or "POSTPAID"
+    btype = raw_btype.upper().strip()
+    if btype not in BillingType.ALL:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"Invalid billing_type '{raw_btype}'. Allowed types: {list(BillingType.ALL)}"
+        )
+
+    # 4. Validate monetary fields (credit_limit >= 0)
+    if req.credit_limit is not None and req.credit_limit < 0:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Credit limit cannot be negative."
+        )
+
+    # 5. Prevent duplicate accounts for same customer
+    existing_acct = db.query(BillingAccount).filter(
+        BillingAccount.customer_id == customer.id
+    ).first()
+    if existing_acct:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Billing account already exists for customer '{customer.customer_code}' ({existing_acct.account_number})."
+        )
+
     try:
         acct = ensure_billing_account(
             db=db,
-            customer_id=req.customer_id,
-            market_id=market,
-            billing_type=req.billing_type or "POSTPAID",
+            customer_id=customer.id,
+            market_id=customer.market_id,
+            billing_type=btype,
             currency=req.currency or "INR",
             credit_limit=req.credit_limit or 0.0,
             payment_term_days=req.payment_term_days or 15
         )
         resp = BillingAccountResponse.model_validate(acct)
+        resp.account_code = acct.account_number
         if acct.customer:
             resp.customer_name = acct.customer.name
             resp.customer_code = acct.customer.customer_code
         return resp
     except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        db.rollback()
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+    except Exception:
+        db.rollback()
+        raise
 
 
 # ─── 3. Subscriptions ─────────────────────────────────────────────────────────
@@ -360,6 +419,48 @@ def create_invoice(
     market: str = Depends(get_current_market)
 ):
     """Generate an itemized invoice for a billable subscription."""
+    # 1. Resolve subscription
+    sub = None
+    try:
+        uuid_obj = uuid.UUID(str(req.subscription_id))
+        sub = db.query(BillingSubscription).filter(BillingSubscription.id == uuid_obj).first()
+    except (ValueError, AttributeError):
+        pass
+    if not sub:
+        sub = db.query(BillingSubscription).filter(BillingSubscription.subscription_code == str(req.subscription_id).strip()).first()
+    if not sub:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Subscription '{req.subscription_id}' not found."
+        )
+
+    # 2. Market isolation
+    if current_user.role != "SUPER_ADMIN" and sub.market_id.lower() != market.lower():
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=f"Not authorized to bill subscription in market '{sub.market_id}'."
+        )
+
+    # 3. Validate dates
+    if req.billing_period_start and req.billing_period_end:
+        if req.billing_period_start >= req.billing_period_end:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="Billing period start must be strictly before billing period end."
+            )
+
+    # 4. Validate monetary fields
+    if req.discount_amount is not None and req.discount_amount < 0:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Discount amount cannot be negative."
+        )
+    if req.tax_rate is not None and (req.tax_rate < 0 or req.tax_rate > 100):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Tax rate must be between 0.0 and 100.0 percent."
+        )
+
     try:
         inv = generate_invoice(
             db=db,
@@ -377,7 +478,14 @@ def create_invoice(
             resp.customer_code = inv.customer.customer_code
         return resp
     except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        db.rollback()
+        err_msg = str(e)
+        if "not found" in err_msg.lower():
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=err_msg)
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=err_msg)
+    except Exception:
+        db.rollback()
+        raise
 
 
 @router.get("/invoices/{invoice_id}/download")
@@ -683,14 +791,16 @@ def verify_ledger(
 @router.post("/ledger/entries/{entry_id}/reverse", response_model=JournalEntryResponse)
 def reverse_entry(
     entry_id: str,
-    reason: str = Query(..., min_length=3),
+    reason: Optional[str] = Query(None, description="Reversal reason"),
+    payload: Optional[JournalEntryReverseRequest] = None,
     db: Session = Depends(get_db),
     current_user: User = Depends(require_roles(["Admin", "SUPER_ADMIN", "Revenue"])),
     market: str = Depends(get_current_market)
 ):
     """Post a balancing reversing journal entry for corrections."""
+    effective_reason = (payload.reason if payload and payload.reason else None) or reason or "General ledger entry reversal"
     try:
-        rev = reverse_journal_entry(db, entry_id=entry_id, reason=reason, created_by_id=current_user.id)
+        rev = reverse_journal_entry(db, entry_id=entry_id, reason=effective_reason, created_by_id=current_user.id)
         tot_deb = sum((float(l.debit) for l in rev.lines))
         tot_crd = sum((float(l.credit) for l in rev.lines))
         resp = JournalEntryResponse.model_validate(rev)
@@ -1143,19 +1253,32 @@ def get_storage_status_endpoint(
 @router.get("/my-billing", response_model=CustomerBillingSummaryResponse)
 def get_my_billing_summary(
     db: Session = Depends(get_db),
-    current_user: User = Depends(require_roles(["Customer", "Admin", "SUPER_ADMIN"])),
-    market: str = Depends(get_current_market)
+    current_user: User = Depends(require_roles(["Customer", "Admin", "SUPER_ADMIN"]))
 ):
     """
     Consolidated customer self-service billing endpoint.
     Resolves customer identity from authenticated session.
     """
-    cust = db.query(Customer).filter(Customer.email == current_user.email).first()
+    email_clean = current_user.email.lower().strip()
+    cust = db.query(Customer).filter(func.lower(Customer.email) == email_clean).first()
     if not cust:
         # Fallback for admin previewing customer billing
-        cust = db.query(Customer).first()
-        if not cust:
-            raise HTTPException(status_code=404, detail="Customer record not found.")
+        if current_user.role in ("Admin", "SUPER_ADMIN", "Viewer"):
+            cust = db.query(Customer).first()
+            if not cust:
+                raise HTTPException(status_code=404, detail="Customer record not found.")
+        else:
+            return {
+                "customer_id": 0,
+                "customer_code": "PENDING-PROVISIONING",
+                "customer_name": current_user.full_name or current_user.email,
+                "billing_account": None,
+                "active_subscriptions": [],
+                "recent_invoices": [],
+                "recent_payments": [],
+                "total_outstanding": 0.0,
+                "account_balance": 0.0
+            }
 
     account = db.query(BillingAccount).filter(BillingAccount.customer_id == cust.id).first()
     subs = db.query(BillingSubscription).filter(BillingSubscription.customer_id == cust.id).all()
