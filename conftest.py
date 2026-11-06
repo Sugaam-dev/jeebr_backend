@@ -35,6 +35,18 @@ settings.DATABASE_URL = TEST_DATABASE_URL
 settings.ENABLE_DEMO_LOGIN = True
 
 import app.database as app_db
+
+import app.models_cashier
+
+import app.models_cpq
+
+import app.models_autopay
+
+import app.models_batch
+import app.models_inventory
+import app.models_lifecycle
+import app.models_partner
+
 import app.seed as app_seed
 import app.main as app_main
 from app.main import app as fastapi_app

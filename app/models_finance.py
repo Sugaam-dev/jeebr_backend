@@ -18,9 +18,9 @@ from datetime import datetime
 from decimal import Decimal
 from typing import Optional, List
 from sqlalchemy import (
-    Column, Integer, String, Boolean, DateTime, ForeignKey, Text, JSON, Index, Numeric, CheckConstraint, text
+    Column, Integer, String, Boolean, DateTime, ForeignKey, Text, JSON, Index, Numeric, CheckConstraint, UniqueConstraint, text
 )
-from sqlalchemy.orm import relationship
+from sqlalchemy.orm import relationship, backref
 from app.database import Base
 from app.models_crm import GUID
 
@@ -32,6 +32,12 @@ class BillingAccountStatus:
     SUSPENDED = "SUSPENDED"
     CLOSED = "CLOSED"
     ALL = (ACTIVE, SUSPENDED, CLOSED)
+
+
+class InvoicingPreference:
+    CONSOLIDATED = "CONSOLIDATED"
+    DECENTRALIZED = "DECENTRALIZED"
+    ALL = (CONSOLIDATED, DECENTRALIZED)
 
 
 class BillingType:
@@ -104,16 +110,26 @@ class ChartOfAccounts:
     ACCOUNTS_RECEIVABLE = "1200"    # Asset: Customer Receivables
     CUSTOMER_DEPOSITS = "2100"      # Liability: Unallocated Prepaid / Overpayment Credits
     TAX_PAYABLE_GST = "2200"        # Liability: GST Output Tax Payable (CGST+SGST/IGST 18%)
+    PARTNER_WALLET_LIABILITY = "2300" # Liability: LCO / Franchise Prepaid Wallet Float
+    TDS_PAYABLE_194H = "2400"       # Liability: Statutory TDS Withheld on Commission (Sec 194H)
     BROADBAND_REVENUE = "4100"      # Revenue: Billed Broadband Services
     VOUCHER_DISCOUNTS = "4200"      # Contra-Revenue / Expense: Promotional & Retention Concessions
+    EQUIPMENT_REVENUE = "4300"      # Revenue: CPE Equipment Rental & Shift Charges
+    DAMAGE_REVENUE = "4400"         # Other Income: Hardware Damage & Forfeited Deposits
+    PARTNER_COMMISSION_EXPENSE = "5100" # Operating Expense: Franchise & LCO Revenue Share Commission
 
     NAMES = {
         CASH_CLEARING: "Cash & Gateway Clearing",
         ACCOUNTS_RECEIVABLE: "Accounts Receivable",
         CUSTOMER_DEPOSITS: "Customer Credit Deposits",
         TAX_PAYABLE_GST: "GST Output Tax Payable",
+        PARTNER_WALLET_LIABILITY: "Partner Wallet Float Liabilities",
+        TDS_PAYABLE_194H: "TDS Payable (Section 194H)",
         BROADBAND_REVENUE: "Broadband Service Revenue",
         VOUCHER_DISCOUNTS: "Voucher & Retention Discounts",
+        EQUIPMENT_REVENUE: "CPE Equipment & Shift Revenue",
+        DAMAGE_REVENUE: "Hardware Damage & Forfeited Deposits",
+        PARTNER_COMMISSION_EXPENSE: "Franchise & LCO Commission Expense",
     }
 
 
@@ -140,6 +156,10 @@ class BillingAccount(Base):
     payment_term_days = Column(Integer, default=15, nullable=False)
     auto_pay_enabled = Column(Boolean, default=False, nullable=False)
 
+    # Enterprise Multi-Site & Corporate Billing Hierarchy
+    parent_billing_account_id = Column(GUID(), ForeignKey('billing_accounts.id', ondelete='SET NULL'), nullable=True, index=True)
+    invoicing_preference = Column(String(32), default=InvoicingPreference.CONSOLIDATED, nullable=False)
+
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
 
@@ -150,11 +170,17 @@ class BillingAccount(Base):
     invoices = relationship('Invoice', back_populates='billing_account')
     payments = relationship('Payment', back_populates='billing_account')
     credit_notes = relationship('CreditNote', back_populates='billing_account')
+    child_accounts = relationship(
+        'BillingAccount',
+        backref=backref('parent_account', remote_side=[id])
+    )
 
     __table_args__ = (
         CheckConstraint(f"billing_type IN {BillingType.ALL}", name="ck_billing_account_type"),
         CheckConstraint(f"status IN {BillingAccountStatus.ALL}", name="ck_billing_account_status"),
+        CheckConstraint(f"invoicing_preference IN {InvoicingPreference.ALL}", name="ck_billing_account_invoicing_preference"),
         Index("ix_billing_accounts_market_status", "market_id", "status"),
+        Index("ix_billing_accounts_parent_id", "parent_billing_account_id"),
     )
 
 
@@ -562,4 +588,65 @@ class NotificationOutbox(Base):
 
     __table_args__ = (
         Index("ix_notif_outbox_status_sched", "status", "scheduled_at"),
+    )
+
+
+# ─── 13. Concurrency-Safe Billing Sequence Generator ──────────────────────────
+
+class BillingSequence(Base):
+    """
+    Transactional sequence counter for gap-managed, concurrency-safe business numbering.
+    Prevents race conditions, duplicates, and unique constraint collisions across multi-worker clusters.
+    """
+    __tablename__ = 'billing_sequences'
+
+    id = Column(GUID(), primary_key=True, default=uuid.uuid4)
+    sequence_type = Column(String(50), nullable=False, index=True)  # INVOICE, CREDIT_NOTE, RECEIPT, PAYMENT
+    market_id = Column(String(50), default='mumbai', index=True, nullable=False)
+    financial_year = Column(Integer, nullable=False, index=True)
+    prefix = Column(String(20), nullable=False)  # INV, CN, RCP, PAY
+    current_value = Column(Integer, default=0, nullable=False)
+    padding_digits = Column(Integer, default=5, nullable=False)
+
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint('sequence_type', 'market_id', 'financial_year', name='uq_billing_seq_type_mkt_yr'),
+        Index("ix_billing_seq_lookup", "sequence_type", "market_id", "financial_year"),
+    )
+
+
+# ─── 14. Promise to Pay (PTP) Commitments ──────────────────────────────────────
+
+class PromiseToPay(Base):
+    """
+    Durable customer payment commitment tracking.
+    Pauses automated dunning cutoff and delinquency actions until commitment_date.
+    """
+    __tablename__ = 'promises_to_pay'
+
+    id = Column(GUID(), primary_key=True, default=uuid.uuid4)
+    billing_account_id = Column(GUID(), ForeignKey('billing_accounts.id', ondelete='CASCADE'), index=True, nullable=False)
+    customer_id = Column(Integer, ForeignKey('customers.id', ondelete='CASCADE'), index=True, nullable=False)
+    invoice_id = Column(Integer, ForeignKey('invoices.id', ondelete='SET NULL'), nullable=True, index=True)
+
+    committed_amount = Column(Numeric(12, 2), nullable=False)
+    commitment_date = Column(DateTime, nullable=False, index=True)
+    status = Column(String(32), default='PENDING', index=True, nullable=False)  # PENDING, HONORED, BROKEN, CANCELLED
+    notes = Column(Text, nullable=True)
+
+    created_by_id = Column(Integer, ForeignKey('users.id', ondelete='SET NULL'), nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+
+    # Relationships
+    billing_account = relationship('BillingAccount')
+    customer = relationship('Customer')
+    invoice = relationship('Invoice')
+    created_by = relationship('User')
+
+    __table_args__ = (
+        Index("ix_ptp_account_status", "billing_account_id", "status"),
+    
     )

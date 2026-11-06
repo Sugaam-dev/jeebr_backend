@@ -30,7 +30,7 @@ from app.models_finance import (
 from app.services.provisioning_catalog import get_service_plan_by_id, CANONICAL_SERVICE_PLANS
 from app.services.payment_provider import get_payment_provider, PaymentChargeResult
 from app.services.ledger_service import post_journal_entry, quantize_money
-from app.services.tax_service import compute_gst, get_supplier_tax_profile
+from app.services.tax_service import compute_gst, get_supplier_tax_profile, resolve_installation_state
 
 
 # ─── Helper Functions ─────────────────────────────────────────────────────────
@@ -435,7 +435,7 @@ def generate_invoice(
         subtotal=subtotal,
         discount_amount=discount,
         market_id=sub.market_id,
-        customer_state=getattr(customer, 'state', None) or sub.market_id,
+        customer_state=(resolve_installation_state(db, customer.id) if customer else None) or getattr(customer, 'state', None) or sub.market_id,
         currency=sub.currency
     )
     taxable_amount = tax_calc.taxable_amount
@@ -446,7 +446,8 @@ def generate_invoice(
     # Generate sequential unique invoice code e.g. INV-MUM-2026-00001
     count = db.query(Invoice).count()
     mkt = sub.market_id[:3].upper()
-    inv_code = f"INV-{mkt}-{datetime.utcnow().year}-{count + 1:05d}"
+    from app.services.sequence_service import generate_business_code, SequenceType
+    inv_code = generate_business_code(db=db, sequence_type=SequenceType.INVOICE, market_id=sub.market_id)
     due_date = datetime.utcnow() + timedelta(days=account.payment_term_days)
 
     invoice = Invoice(
@@ -545,6 +546,179 @@ def generate_invoice(
     return invoice
 
 
+def generate_consolidated_invoice(
+    db: Session,
+    billing_account_id: str,
+    billing_period_start: Optional[datetime] = None,
+    billing_period_end: Optional[datetime] = None,
+    items: Optional[List[Dict[str, Any]]] = None,
+    discount_amount: float = 0.0,
+    notes: Optional[str] = None
+) -> Invoice:
+    """
+    Generates a consolidated multi-service tax invoice aggregating multiple subscriptions,
+    static IPs, CPE equipment rentals, and one-time fees into a unified bill.
+    Adheres strictly to Section 12(11)(a) of the IGST Act for Place of Supply.
+    """
+    acct_uuid = uuid.UUID(str(billing_account_id)) if isinstance(billing_account_id, str) else billing_account_id
+    account = db.query(BillingAccount).filter(BillingAccount.id == acct_uuid).first()
+    if not account:
+        raise ValueError(f"Billing account '{billing_account_id}' not found.")
+
+    customer = account.customer
+    period_start = billing_period_start or datetime.utcnow().replace(day=1, hour=0, minute=0, second=0)
+    period_end = billing_period_end or (period_start + timedelta(days=30))
+
+    # Resolve line items
+    billable_lines = []
+    if items and len(items) > 0:
+        billable_lines = items
+    else:
+        # Auto-collect all active subscriptions under this billing account
+        active_subs = (
+            db.query(BillingSubscription)
+            .filter(
+                BillingSubscription.billing_account_id == account.id,
+                BillingSubscription.status == SubscriptionStatus.ACTIVE
+            )
+            .all()
+        )
+        if not active_subs:
+            raise ValueError(f"No active subscriptions or charges found for billing account '{account.account_number}'.")
+
+        for s in active_subs:
+            billable_lines.append({
+                "description": f"Broadband: {s.plan_name} ({period_start.strftime('%d %b')} - {period_end.strftime('%d %b %Y')})",
+                "quantity": Decimal("1.00"),
+                "unit_price": _format_money(s.unit_price),
+                "sac_code": "998422",
+                "subscription_id": s.id
+            })
+
+    subtotal = sum((_format_money(line["quantity"]) * _format_money(line["unit_price"]) for line in billable_lines), Decimal("0.00"))
+    discount = min(_format_money(discount_amount), subtotal)
+
+    # Resolve Installation State under Section 12(11)(a)
+    inst_state = resolve_installation_state(db, account.customer_id) if account.customer_id else None
+    tax_calc = compute_gst(
+        subtotal=subtotal,
+        discount_amount=discount,
+        market_id=account.market_id,
+        customer_state=inst_state or getattr(customer, 'state', None) or account.market_id,
+        customer_gstin=getattr(account, 'tax_id', None) or getattr(customer, 'customer_gstin', None),
+        currency=account.currency
+    )
+
+    from app.services.sequence_service import generate_business_code, SequenceType
+    inv_code = generate_business_code(
+        db=db,
+        sequence_type=SequenceType.INVOICE,
+        market_id=account.market_id,
+        year=datetime.utcnow().year
+    )
+    due_date = datetime.utcnow() + timedelta(days=account.payment_term_days)
+
+    invoice = Invoice(
+        market_id=account.market_id,
+        invoice_code=inv_code,
+        customer_id=account.customer_id,
+        billing_account_id=account.id,
+        subscription_id=billable_lines[0].get("subscription_id") if billable_lines else None,
+        plan_name="Consolidated Telecom Services" if len(billable_lines) > 1 else billable_lines[0].get("description", "Broadband"),
+        transaction_type="Postpaid Bill",
+        payment_method="UPI",
+        billed_amount=float(tax_calc.total_amount),
+        expected_amount=float(tax_calc.total_amount),
+        due_date=due_date,
+        status=InvoiceStatus.ISSUED,
+        currency=account.currency,
+        subtotal=subtotal,
+        tax_amount=tax_calc.total_tax,
+        discount_amount=discount,
+        total_amount=tax_calc.total_amount,
+        paid_amount=Decimal('0.00'),
+        outstanding_amount=tax_calc.total_amount,
+        tax_treatment=tax_calc.tax_treatment,
+        cgst_amount=tax_calc.cgst_amount,
+        sgst_amount=tax_calc.sgst_amount,
+        igst_amount=tax_calc.igst_amount,
+        place_of_supply=tax_calc.place_of_supply,
+        supplier_gstin=tax_calc.supplier_gstin,
+        customer_gstin=tax_calc.customer_gstin,
+        billing_period_start=period_start,
+        billing_period_end=period_end,
+        idempotency_key=f"inv_cons_{account.id}_{int(period_start.timestamp())}",
+        notes=notes or "Consolidated Telecom Services Statement",
+        created_at=datetime.utcnow()
+    )
+    db.add(invoice)
+    db.flush()
+
+    tax_rate_dec = tax_calc.cgst_rate + tax_calc.sgst_rate if tax_calc.tax_treatment == 'INTRA_STATE' else tax_calc.igst_rate
+
+    # Create detailed InvoiceLineItems
+    for line in billable_lines:
+        line_qty = _format_money(line["quantity"])
+        line_unit_price = _format_money(line["unit_price"])
+        line_subtotal = (line_qty * line_unit_price).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+        line_tax = (line_subtotal * (tax_rate_dec / Decimal("100.00"))).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+        line_total = line_subtotal + line_tax
+
+        line_item = InvoiceLineItem(
+            id=uuid.uuid4(),
+            invoice_id=invoice.id,
+            subscription_id=line.get("subscription_id"),
+            description=line.get("description", "Broadband Service"),
+            quantity=line_qty,
+            unit_price=line_unit_price,
+            amount=line_subtotal,
+            tax_rate=tax_rate_dec,
+            tax_amount=line_tax,
+            discount_amount=Decimal("0.00"),
+            total_amount=line_total,
+            currency=account.currency,
+            created_at=datetime.utcnow()
+        )
+        db.add(line_item)
+
+    db.flush()
+
+    # Post Balanced General Ledger Journal Entry
+    ledger_lines = [
+        {
+            "account_code": ChartOfAccounts.ACCOUNTS_RECEIVABLE,
+            "debit": tax_calc.total_amount,
+            "credit": Decimal('0.00'),
+            "currency": account.currency
+        },
+        {
+            "account_code": ChartOfAccounts.BROADBAND_REVENUE,
+            "debit": Decimal('0.00'),
+            "credit": tax_calc.taxable_amount,
+            "currency": account.currency
+        },
+        {
+            "account_code": ChartOfAccounts.TAX_PAYABLE_GST,
+            "debit": Decimal('0.00'),
+            "credit": tax_calc.total_tax,
+            "currency": account.currency
+        }
+    ]
+    post_journal_entry(
+        db=db,
+        market_id=account.market_id,
+        reference_type="INVOICE",
+        reference_id=inv_code,
+        description=f"Consolidated Tax Invoice {inv_code} for {account.account_number}",
+        lines=ledger_lines,
+        allow_idempotent_replay=True
+    )
+
+    db.commit()
+    db.refresh(invoice)
+    return invoice
+
+
 # ─── 4. Payments, Allocations & Ledger ────────────────────────────────────────
 
 def record_payment(
@@ -600,7 +774,8 @@ def record_payment(
 
     # 4. Generate payment reference e.g. PAY-MUM-2026-00001
     count = db.query(Payment).count()
-    pay_ref = f"PAY-{account.market_id[:3].upper()}-{datetime.utcnow().year}-{count + 1:05d}"
+    from app.services.sequence_service import generate_business_code, SequenceType
+    pay_ref = generate_business_code(db=db, sequence_type=SequenceType.PAYMENT, market_id=account.market_id)
 
     payment = Payment(
         id=uuid.uuid4(),
@@ -754,7 +929,8 @@ def issue_credit_note(
         raise ValueError("Credit note amount must be positive.")
 
     count = db.query(CreditNote).count()
-    cn_code = f"CN-{account.market_id[:3].upper()}-{datetime.utcnow().year}-{count + 1:05d}"
+    from app.services.sequence_service import generate_business_code, SequenceType
+    cn_code = generate_business_code(db=db, sequence_type=SequenceType.CREDIT_NOTE, market_id=account.market_id)
 
     credit_note = CreditNote(
         id=uuid.uuid4(),

@@ -46,20 +46,32 @@ _LEADER_RUNNER_STATE: Dict[str, Any] = {}
 
 # ─── 1. Timezone & Next-Run Cadence Calculator ────────────────────────────────
 
-def get_scheduler_timezone() -> zoneinfo.ZoneInfo:
-    """Returns validated IANA timezone configured for the scheduler runner."""
-    tz_name = getattr(settings, "SCHEDULER_TIMEZONE", "UTC") or "UTC"
+def get_scheduler_timezone() -> Any:
+    """Returns validated IANA or offset timezone configured for the scheduler runner."""
+    tz_name = (getattr(settings, "SCHEDULER_TIMEZONE", "UTC") or "UTC").strip()
+    # Fast path for standard UTC without requiring filesystem tzdata
+    if tz_name.upper() in ("UTC", "GMT", "ETC/UTC"):
+        try:
+            return zoneinfo.ZoneInfo("UTC")
+        except Exception:
+            return dt_tz.utc
+
     try:
-        return zoneinfo.ZoneInfo(tz_name.strip())
+        return zoneinfo.ZoneInfo(tz_name)
     except Exception as e:
-        logger.warning(f"[SCHEDULER_RUNNER] Invalid timezone '{tz_name}' ({e}); falling back to UTC.")
-        return zoneinfo.ZoneInfo("UTC")
+        logger.warning(f"[SCHEDULER_RUNNER] Invalid or missing timezone '{tz_name}' ({e}); falling back.")
+        if tz_name.upper() in ("ASIA/KOLKATA", "ASIA/CALCUTTA", "IST"):
+            return dt_tz(timedelta(hours=5, minutes=30), name="IST")
+        try:
+            return zoneinfo.ZoneInfo("UTC")
+        except Exception:
+            return dt_tz.utc
 
 
 def compute_next_run(
     job_type: str,
     from_dt_utc: datetime,
-    tz: zoneinfo.ZoneInfo,
+    tz: Any,
     interval_seconds: Optional[int] = None
 ) -> datetime:
     """
@@ -144,7 +156,7 @@ class SchedulerLeaderElection:
         if redis_url and redis_url.strip():
             try:
                 import redis
-                r = redis.from_url(redis_url.strip(), decode_responses=True)
+                r = redis.from_url(redis_url.strip(), decode_responses=True, socket_connect_timeout=1, socket_timeout=1)
                 if self.is_leader:
                     # Renew existing lease
                     res = r.eval(self.LUA_RENEW_SCRIPT, 1, self.leader_key, self.runner_id, self.ttl)
@@ -196,7 +208,7 @@ class SchedulerLeaderElection:
         if redis_url and redis_url.strip():
             try:
                 import redis
-                r = redis.from_url(redis_url.strip())
+                r = redis.from_url(redis_url.strip(), decode_responses=True, socket_connect_timeout=1, socket_timeout=1)
                 r.eval(self.LUA_RELEASE_SCRIPT, 1, self.leader_key, self.runner_id)
             except Exception:
                 pass

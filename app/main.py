@@ -10,7 +10,7 @@ import app.database as app_db
 engine = app_db.engine
 Base = app_db.Base
 from app.routers import (
-    auth, customers, assurance, churn, journeys, orchestration, revenue, governance, cockpit, pilot_bundle, ticketing, field_operations, olt_telemetry, rbac, network, provisioning, finance, inventory, tariffs, vouchers
+    auth, customers, assurance, churn, journeys, orchestration, revenue, governance, cockpit, pilot_bundle, ticketing, field_operations, olt_telemetry, rbac, network, provisioning, finance, inventory, tariffs, vouchers, partners
 )
 from app import markets
 
@@ -228,6 +228,7 @@ app.include_router(finance.router, prefix=settings.API_V1_STR)
 app.include_router(inventory.router, prefix=settings.API_V1_STR)
 app.include_router(tariffs.router, prefix=settings.API_V1_STR)
 app.include_router(vouchers.router, prefix=settings.API_V1_STR)
+app.include_router(partners.router, prefix=settings.API_V1_STR)
 
 # Alias /api/invoices/issue for direct client compatibility
 app.add_api_route(

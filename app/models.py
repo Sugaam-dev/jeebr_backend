@@ -236,6 +236,14 @@ class Invoice(Base):
     customer_gstin = Column(String(32), nullable=True)
     pdf_storage_key = Column(String(255), nullable=True)
 
+    # Statutory GST e-Invoicing (Rule 48(4) IRN & Dynamic B2C UPI QR)
+    irn_hash = Column(String(64), nullable=True, index=True)
+    irp_ack_no = Column(String(64), nullable=True)
+    irp_ack_date = Column(DateTime, nullable=True)
+    irp_signed_qr = Column(Text, nullable=True)
+    einvoice_status = Column(String(32), default='NOT_APPLICABLE', nullable=False)
+    upi_qr_payload = Column(Text, nullable=True)
+
     customer = relationship('Customer', back_populates='invoices')
     billing_account = relationship('BillingAccount', back_populates='invoices')
     subscription = relationship('BillingSubscription')

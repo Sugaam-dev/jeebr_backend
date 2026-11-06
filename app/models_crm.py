@@ -5,7 +5,7 @@ from sqlalchemy import (
     Column, String, Text, Boolean, Integer, Float, ForeignKey,
     DateTime, Index, UniqueConstraint, CheckConstraint
 )
-from sqlalchemy.orm import relationship
+from sqlalchemy.orm import relationship, backref
 from sqlalchemy.types import TypeDecorator, CHAR
 from app.database import Base
 
@@ -48,6 +48,14 @@ class AccountType:
     ENTERPRISE = "ENTERPRISE"
     SME = "SME"
     ALL = (RESIDENTIAL, ENTERPRISE, SME)
+
+class HierarchyType:
+    STANDALONE = "STANDALONE"
+    HOLDING_COMPANY = "HOLDING_COMPANY"
+    SUBSIDIARY = "SUBSIDIARY"
+    BRANCH_LOCATION = "BRANCH_LOCATION"
+    FRANCHISE = "FRANCHISE"
+    ALL = (STANDALONE, HOLDING_COMPANY, SUBSIDIARY, BRANCH_LOCATION, FRANCHISE)
 
 class CustomerLifecycleStatus:
     PROSPECT = "PROSPECT"
@@ -133,6 +141,10 @@ class CRMCustomer(Base):
     status = Column(String(32), nullable=False, default=CustomerLifecycleStatus.PROSPECT)
     market_id = Column(String(32), nullable=False, index=True)
 
+    # Enterprise Corporate Hierarchy (Parent-Child, Multi-Site & Holding Structure)
+    parent_customer_id = Column(GUID(), ForeignKey("crm_customers.id", ondelete="SET NULL"), nullable=True, index=True)
+    hierarchy_type = Column(String(32), nullable=False, default=HierarchyType.STANDALONE)
+
     # 1:1 Bridge to legacy operational customer (nullable, unique, preserves legacy model)
     legacy_customer_id = Column(Integer, ForeignKey("customers.id", ondelete="SET NULL"), unique=True, nullable=True)
 
@@ -154,6 +166,10 @@ class CRMCustomer(Base):
     documents = relationship("CRMDocument", back_populates="customer", passive_deletes=True)
     activities = relationship("CRMActivity", back_populates="customer", passive_deletes=True)
     portal_users = relationship("CRMAccountUser", back_populates="customer", passive_deletes=True)
+    subsidiaries = relationship(
+        "CRMCustomer",
+        backref=backref("parent_customer", remote_side=[id])
+    )
 
     __table_args__ = (
         CheckConstraint(
@@ -164,7 +180,12 @@ class CRMCustomer(Base):
             f"account_type IN {AccountType.ALL}",
             name="ck_crm_customer_type"
         ),
+        CheckConstraint(
+            f"hierarchy_type IN {HierarchyType.ALL}",
+            name="ck_crm_customer_hierarchy_type"
+        ),
         Index("ix_crm_customers_market_status", "market_id", "status"),
+        Index("ix_crm_customers_parent_id", "parent_customer_id"),
     )
 
 

@@ -25,6 +25,8 @@ from reportlab.platypus import (
     SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, HRFlowable
 )
 from reportlab.pdfgen import canvas
+from reportlab.graphics.barcode import qr
+from reportlab.graphics.shapes import Drawing
 
 from app.models import Invoice
 from app.services.tax_service import get_supplier_tax_profile
@@ -162,8 +164,29 @@ def generate_invoice_pdf(invoice: Invoice) -> bytes:
         ('RIGHTPADDING', (0, 0), (-1, -1), 0),
     ]))
     story.append(header_table)
-    story.append(Spacer(1, 12))
-    story.append(HRFlowable(width="100%", thickness=1, color=colors.HexColor("#E2E8F0"), spaceBefore=0, spaceAfter=12))
+    story.append(Spacer(1, 8))
+
+    # e-Invoice IRN Statutory Details (Rule 48(4) CGST Compliance)
+    if getattr(invoice, 'irn_hash', None):
+        irn_p = Paragraph(
+            f"<b>e-Invoice IRN:</b> <font name='Helvetica' size='7'>{invoice.irn_hash}</font><br/>"
+            f"<b>IRP Ack No:</b> {getattr(invoice, 'irp_ack_no', 'N/A')} | "
+            f"<b>Ack Date:</b> {invoice.irp_ack_date.strftime('%d-%b-%Y %H:%M:%S') if getattr(invoice, 'irp_ack_date', None) else 'N/A'}",
+            ParagraphStyle('IRNStyle', parent=body_style, fontSize=7.5, leading=10, textColor=colors.HexColor("#0F225A"))
+        )
+        irn_table = Table([[irn_p]], colWidths=[523])
+        irn_table.setStyle(TableStyle([
+            ('BACKGROUND', (0, 0), (-1, -1), colors.HexColor("#EFF6FF")),
+            ('BOX', (0, 0), (-1, -1), 0.5, colors.HexColor("#3B82F6")),
+            ('TOPPADDING', (0, 0), (-1, -1), 4),
+            ('BOTTOMPADDING', (0, 0), (-1, -1), 4),
+            ('LEFTPADDING', (0, 0), (-1, -1), 6),
+            ('RIGHTPADDING', (0, 0), (-1, -1), 6),
+        ]))
+        story.append(irn_table)
+        story.append(Spacer(1, 4))
+
+    story.append(HRFlowable(width="100%", thickness=1, color=colors.HexColor("#E2E8F0"), spaceBefore=0, spaceAfter=10))
 
     # 2. Bill To & Supply Details
     cust = invoice.customer
@@ -172,8 +195,9 @@ def generate_invoice_pdf(invoice: Invoice) -> bytes:
     cust_email = cust.email if cust else "N/A"
     cust_phone = cust.phone if cust else "N/A"
     cust_locality = getattr(cust, 'locality', 'Mumbai Area')
-    pos = getattr(invoice, 'place_of_supply', None) or ("27-Maharashtra" if invoice.market_id.lower() == "mumbai" else "19-West Bengal")
-    tax_treatment = getattr(invoice, 'tax_treatment', 'INTRA_STATE')
+    mkt = getattr(invoice, 'market_id', None) or 'mumbai'
+    pos = getattr(invoice, 'place_of_supply', None) or ("27-Maharashtra" if mkt.lower() == "mumbai" else "19-West Bengal")
+    tax_treatment = getattr(invoice, 'tax_treatment', None) or 'INTRA_STATE'
 
     billing_info_data = [
         [
@@ -184,7 +208,7 @@ def generate_invoice_pdf(invoice: Invoice) -> bytes:
             Paragraph(
                 f"<b>Name:</b> {cust_name}<br/>"
                 f"<b>Subscriber ID:</b> {cust_code}<br/>"
-                f"<b>Billing Address:</b> {cust_locality}, {invoice.market_id.capitalize()}<br/>"
+                f"<b>Billing Address:</b> {cust_locality}, {mkt.capitalize()}<br/>"
                 f"<b>Email:</b> {cust_email} | <b>Phone:</b> {cust_phone}",
                 body_style
             ),
@@ -225,12 +249,15 @@ def generate_invoice_pdf(invoice: Invoice) -> bytes:
 
     items_data = [table_headers]
 
-    subtotal_dec = Decimal(str(invoice.subtotal))
-    tax_dec = Decimal(str(invoice.tax_amount))
-    cgst_dec = Decimal(str(getattr(invoice, 'cgst_amount', '0.00')))
-    sgst_dec = Decimal(str(getattr(invoice, 'sgst_amount', '0.00')))
-    igst_dec = Decimal(str(getattr(invoice, 'igst_amount', '0.00')))
-    total_dec = Decimal(str(invoice.total_amount))
+    subtotal_dec = Decimal(str(getattr(invoice, 'subtotal', None) or '0.00'))
+    tax_dec = Decimal(str(getattr(invoice, 'tax_amount', None) or '0.00'))
+    cgst_dec = Decimal(str(getattr(invoice, 'cgst_amount', None) or '0.00'))
+    sgst_dec = Decimal(str(getattr(invoice, 'sgst_amount', None) or '0.00'))
+    igst_dec = Decimal(str(getattr(invoice, 'igst_amount', None) or '0.00'))
+    total_dec = Decimal(str(getattr(invoice, 'total_amount', None) or '0.00'))
+    paid_dec = Decimal(str(getattr(invoice, 'paid_amount', None) or '0.00'))
+    balance_dec = Decimal(str(getattr(invoice, 'outstanding_amount', None) or (total_dec - paid_dec)))
+    discount_dec = Decimal(str(getattr(invoice, 'discount_amount', None) or '0.00'))
 
     # If cgst/sgst not set on old records, fallback cleanly
     if is_intra and cgst_dec == Decimal('0.00') and tax_dec > Decimal('0.00'):
@@ -285,12 +312,9 @@ def generate_invoice_pdf(invoice: Invoice) -> bytes:
     story.append(Spacer(1, 14))
 
     # 4. Summary & Ledger Balancing Block
-    paid_dec = Decimal(str(invoice.paid_amount))
-    balance_dec = Decimal(str(invoice.outstanding_amount))
-
     summary_data = [
         [Paragraph("<b>Subtotal (Taxable Value):</b>", body_style), Paragraph(f"INR {float(subtotal_dec):,.2f}", table_cell_right)],
-        [Paragraph("<b>Promotional Discount:</b>", body_style), Paragraph(f"- INR {float(invoice.discount_amount):,.2f}", table_cell_right)],
+        [Paragraph("<b>Promotional Discount:</b>", body_style), Paragraph(f"- INR {float(discount_dec):,.2f}", table_cell_right)],
     ]
     if is_intra:
         summary_data.append([Paragraph("<b>Central GST (CGST 9.00%):</b>", body_style), Paragraph(f"INR {float(cgst_dec):,.2f}", table_cell_right)])
@@ -315,25 +339,48 @@ def generate_invoice_pdf(invoice: Invoice) -> bytes:
         ('LINEBELOW', (0, -2), (-1, -2), 0.5, colors.HexColor("#CBD5E1")),
     ]))
 
-    # Payment Notice Block
+    # Payment Notice & Dynamic QR Block
     status_color = "#15803D" if invoice.status.upper() == "PAID" else ("#B91C1C" if invoice.status.upper() == "OVERDUE" else "#2563EB")
     notice_text = (
         f"<font color='{status_color}'><b>PAYMENT STATUS: {invoice.status.upper()}</b></font><br/>"
-        f"UPI ID for Instant Autopay: <b>sentinelos.pmrg@icici</b><br/>"
+        f"UPI ID: <b>sentinelos.pmrg@icici</b><br/>"
         f"NEFT/RTGS Account: 000205001234 (IFSC: ICIC0000002)<br/>"
         f"Thank you for choosing SentinelOS Fiber Broadband."
     )
+
+    qr_payload = getattr(invoice, 'upi_qr_payload', None)
+    if not qr_payload and getattr(invoice, 'irp_signed_qr', None):
+        qr_payload = invoice.irp_signed_qr
+    if not qr_payload:
+        qr_payload = f"upi://pay?pa=sentinelos.pmrg@icici&pn=SentinelOS&am={float(invoice.total_amount):.2f}&tr={invoice.invoice_code}&cu=INR"
+
+    qr_widget = qr.QrCodeWidget(qr_payload)
+    bounds = qr_widget.getBounds()
+    qw = bounds[2] - bounds[0]
+    qh = bounds[3] - bounds[1]
+    qr_size = 52
+    qr_drawing = Drawing(qr_size, qr_size, transform=[qr_size / qw, 0, 0, qr_size / qh, 0, 0])
+    qr_drawing.add(qr_widget)
+
+    qr_cell = [
+        qr_drawing,
+        Paragraph("<font size='6' color='#64748B'>Scan to Pay UPI</font>", ParagraphStyle('QRLbl', parent=body_style, alignment=1))
+    ]
+
     notice_table = Table([
-        [Paragraph(notice_text, body_style), summary_table]
-    ], colWidths=[263, 260])
+        [Paragraph(notice_text, body_style), qr_cell, summary_table]
+    ], colWidths=[205, 58, 260])
     notice_table.setStyle(TableStyle([
         ('VALIGN', (0, 0), (-1, -1), 'TOP'),
-        ('BACKGROUND', (0, 0), (0, 0), colors.HexColor("#F8FAFC")),
-        ('BOX', (0, 0), (0, 0), 0.5, colors.HexColor("#CBD5E1")),
+        ('ALIGN', (1, 0), (1, 0), 'CENTER'),
+        ('BACKGROUND', (0, 0), (1, 0), colors.HexColor("#F8FAFC")),
+        ('BOX', (0, 0), (1, 0), 0.5, colors.HexColor("#CBD5E1")),
         ('LEFTPADDING', (0, 0), (0, 0), 8),
-        ('RIGHTPADDING', (0, 0), (0, 0), 8),
-        ('TOPPADDING', (0, 0), (0, 0), 8),
-        ('BOTTOMPADDING', (0, 0), (0, 0), 8),
+        ('RIGHTPADDING', (0, 0), (0, 0), 6),
+        ('LEFTPADDING', (1, 0), (1, 0), 2),
+        ('RIGHTPADDING', (1, 0), (1, 0), 2),
+        ('TOPPADDING', (0, 0), (-1, -1), 6),
+        ('BOTTOMPADDING', (0, 0), (-1, -1), 6),
     ]))
     story.append(notice_table)
 
